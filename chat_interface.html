@@ -1,0 +1,1149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CAD Document Chat Assistant</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1e40af;
+            --secondary: #64748b;
+            --background: #0f172a;
+            --surface: #1e293b;
+            --surface-light: #334155;
+            --border: #475569;
+            --text: #f1f5f9;
+            --text-muted: #94a3b8;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+            --citation: #8b5cf6;
+            --shadow: rgba(0, 0, 0, 0.3);
+            --accent: #06b6d4;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--background);
+            color: var(--text);
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .app-container {
+            display: flex;
+            height: 100vh;
+            position: relative;
+        }
+
+        /* Upload Screen */
+        .upload-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            transition: opacity 0.5s ease, visibility 0.5s ease;
+        }
+
+        .upload-screen.hidden {
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+        }
+
+        .upload-container {
+            background: var(--surface);
+            border-radius: 24px;
+            padding: 60px;
+            box-shadow: 0 20px 60px var(--shadow);
+            text-align: center;
+            max-width: 600px;
+            width: 90%;
+            animation: slideUp 0.6s ease-out;
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(40px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .upload-icon {
+            width: 120px;
+            height: 120px;
+            background: linear-gradient(135deg, var(--primary) 0%, #8b5cf6 100%);
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 30px;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                transform: scale(1);
+            }
+            50% {
+                transform: scale(1.05);
+            }
+        }
+
+        .upload-icon i {
+            font-size: 56px;
+            color: white;
+        }
+
+        .upload-title {
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 12px;
+            background: linear-gradient(135deg, var(--primary) 0%, #8b5cf6 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .upload-subtitle {
+            font-size: 16px;
+            color: var(--text-muted);
+            margin-bottom: 40px;
+        }
+
+        .file-drop-zone {
+            border: 2px dashed var(--border);
+            border-radius: 16px;
+            padding: 50px;
+            margin-bottom: 30px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: var(--background);
+        }
+
+        .file-drop-zone:hover {
+            border-color: var(--primary);
+            background: rgba(37, 99, 235, 0.05);
+        }
+
+        .file-drop-zone.drag-over {
+            border-color: var(--primary);
+            background: rgba(37, 99, 235, 0.1);
+            transform: scale(1.02);
+        }
+
+        .upload-btn {
+            background: linear-gradient(135deg, var(--primary) 0%, #8b5cf6 100%);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            padding: 16px 40px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+        }
+
+        .upload-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(37, 99, 235, 0.4);
+        }
+
+        .upload-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .file-info {
+            margin-top: 20px;
+            padding: 16px;
+            background: var(--background);
+            border-radius: 12px;
+            display: none;
+        }
+
+        .file-info.show {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        /* Chat Panel */
+        .chat-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            border-right: 1px solid var(--border);
+            background: var(--background);
+        }
+
+        .chat-header {
+            padding: 24px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .chat-header-left {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .chat-logo {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, var(--primary) 0%, #8b5cf6 100%);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .chat-logo i {
+            font-size: 24px;
+            color: white;
+        }
+
+        .chat-title-group h1 {
+            font-size: 20px;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .chat-title-group p {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 12px;
+        }
+
+        .icon-btn {
+            background: var(--surface-light);
+            border: none;
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            color: var(--text);
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .icon-btn:hover {
+            background: var(--primary);
+            transform: translateY(-2px);
+        }
+
+        .icon-btn.active {
+            background: var(--accent);
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .chat-messages::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .chat-messages::-webkit-scrollbar-track {
+            background: var(--background);
+        }
+
+        .chat-messages::-webkit-scrollbar-thumb {
+            background: var(--surface-light);
+            border-radius: 4px;
+        }
+
+        .message {
+            display: flex;
+            gap: 16px;
+            animation: messageSlide 0.4s ease-out;
+        }
+
+        @keyframes messageSlide {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .message-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            font-size: 18px;
+        }
+
+        .message.user .message-avatar {
+            background: linear-gradient(135deg, var(--success) 0%, #059669 100%);
+        }
+
+        .message.assistant .message-avatar {
+            background: linear-gradient(135deg, var(--primary) 0%, #8b5cf6 100%);
+        }
+
+        .message-content {
+            flex: 1;
+            background: var(--surface);
+            padding: 16px 20px;
+            border-radius: 16px;
+            border-top-left-radius: 4px;
+        }
+
+        .message.user .message-content {
+            background: var(--surface-light);
+        }
+
+        .message-text {
+            line-height: 1.6;
+            font-size: 15px;
+            word-wrap: break-word;
+        }
+
+        .message-text strong {
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .message-text em {
+            font-style: italic;
+            color: var(--text-muted);
+        }
+
+        .message-text code {
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+        }
+
+        .message-text br {
+            display: block;
+            content: "";
+            margin: 0.25em 0;
+        }
+
+        .citation {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            background: var(--citation);
+            color: white;
+            padding: 2px 8px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin: 0 2px;
+        }
+
+        .citation:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+        }
+
+        .typing-indicator {
+            display: flex;
+            gap: 6px;
+            padding: 12px 0;
+        }
+
+        .typing-dot {
+            width: 8px;
+            height: 8px;
+            background: var(--primary);
+            border-radius: 50%;
+            animation: typing 1.4s ease-in-out infinite;
+        }
+
+        .typing-dot:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+
+        .typing-dot:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+
+        @keyframes typing {
+            0%, 60%, 100% {
+                transform: translateY(0);
+                opacity: 0.7;
+            }
+            30% {
+                transform: translateY(-10px);
+                opacity: 1;
+            }
+        }
+
+        .chat-input-container {
+            padding: 24px;
+            background: var(--surface);
+            border-top: 1px solid var(--border);
+        }
+
+        .chat-input-wrapper {
+            display: flex;
+            gap: 12px;
+            background: var(--background);
+            padding: 12px;
+            border-radius: 16px;
+            border: 2px solid transparent;
+            transition: all 0.3s ease;
+        }
+
+        .chat-input-wrapper:focus-within {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.1);
+        }
+
+        #chatInput {
+            flex: 1;
+            background: transparent;
+            border: none;
+            outline: none;
+            color: var(--text);
+            font-size: 15px;
+            font-family: inherit;
+            padding: 8px;
+        }
+
+        #chatInput::placeholder {
+            color: var(--text-muted);
+        }
+
+        .send-btn {
+            background: linear-gradient(135deg, var(--primary) 0%, #8b5cf6 100%);
+            border: none;
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            color: white;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .send-btn:hover:not(:disabled) {
+            transform: scale(1.05);
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+        }
+
+        .send-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* PDF Viewer Panel */
+        .pdf-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: var(--background);
+        }
+
+        .pdf-header {
+            padding: 24px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .pdf-info h2 {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .pdf-info p {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        .pdf-controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .page-nav {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            background: var(--background);
+            padding: 8px 12px;
+            border-radius: 10px;
+        }
+
+        .page-info {
+            font-size: 14px;
+            color: var(--text-muted);
+            margin: 0 8px;
+        }
+
+        .pdf-viewer-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+            display: flex;
+            justify-content: center;
+            background: var(--background);
+        }
+
+        .pdf-viewer-container::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .pdf-viewer-container::-webkit-scrollbar-track {
+            background: var(--background);
+        }
+
+        .pdf-viewer-container::-webkit-scrollbar-thumb {
+            background: var(--surface-light);
+            border-radius: 4px;
+        }
+
+        #pdfCanvas {
+            box-shadow: 0 8px 32px var(--shadow);
+            border-radius: 12px;
+            max-width: 100%;
+            height: auto;
+        }
+
+        .loading-spinner {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+            height: 100%;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid var(--surface-light);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--text-muted);
+            gap: 16px;
+        }
+
+        .empty-state i {
+            font-size: 64px;
+            opacity: 0.3;
+        }
+
+        /* Image Search Panel */
+        .image-search-panel {
+            position: fixed;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            width: 400px;
+            background: var(--surface);
+            border-left: 1px solid var(--border);
+            transform: translateX(100%);
+            transition: transform 0.3s ease;
+            z-index: 1001;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .image-search-panel.open {
+            transform: translateX(0);
+        }
+
+        .image-search-header {
+            padding: 20px;
+            background: var(--background);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .image-search-header h3 {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .image-search-header h3 i {
+            color: var(--accent);
+        }
+
+        .close-panel-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            font-size: 20px;
+            cursor: pointer;
+            padding: 8px;
+            border-radius: 8px;
+            transition: all 0.2s ease;
+        }
+
+        .close-panel-btn:hover {
+            background: var(--surface-light);
+            color: var(--text);
+        }
+
+        .image-search-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+        }
+
+        .search-input-group {
+            margin-bottom: 20px;
+        }
+
+        .search-input-group label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .search-input-wrapper {
+            display: flex;
+            gap: 10px;
+        }
+
+        .search-input-wrapper input {
+            flex: 1;
+            background: var(--background);
+            border: 2px solid var(--border);
+            border-radius: 10px;
+            padding: 12px 16px;
+            color: var(--text);
+            font-size: 14px;
+            transition: all 0.2s ease;
+        }
+
+        .search-input-wrapper input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        .search-btn {
+            background: var(--accent);
+            border: none;
+            border-radius: 10px;
+            padding: 12px 20px;
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .search-btn:hover {
+            background: #0891b2;
+            transform: translateY(-1px);
+        }
+
+        .search-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .image-upload-zone {
+            border: 2px dashed var(--border);
+            border-radius: 12px;
+            padding: 30px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin-bottom: 20px;
+        }
+
+        .image-upload-zone:hover {
+            border-color: var(--accent);
+            background: rgba(6, 182, 212, 0.05);
+        }
+
+        .image-upload-zone.drag-over {
+            border-color: var(--accent);
+            background: rgba(6, 182, 212, 0.1);
+        }
+
+        .image-upload-zone i {
+            font-size: 32px;
+            color: var(--accent);
+            margin-bottom: 10px;
+        }
+
+        .image-upload-zone p {
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+
+        .search-results {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .search-result-item {
+            background: var(--background);
+            border-radius: 12px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: 2px solid transparent;
+        }
+
+        .search-result-item:hover {
+            border-color: var(--accent);
+            transform: translateY(-2px);
+        }
+
+        .result-thumbnail {
+            width: 100%;
+            height: 150px;
+            object-fit: cover;
+            background: var(--surface-light);
+        }
+
+        .result-info {
+            padding: 12px;
+        }
+
+        .result-title {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 4px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .result-page-badge {
+            background: var(--citation);
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .result-description {
+            font-size: 12px;
+            color: var(--text-muted);
+            line-height: 1.4;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        .result-score {
+            margin-top: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .score-bar {
+            flex: 1;
+            height: 4px;
+            background: var(--surface-light);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .score-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), var(--success));
+            border-radius: 2px;
+            transition: width 0.3s ease;
+        }
+
+        .score-value {
+            font-size: 11px;
+            color: var(--text-muted);
+            min-width: 40px;
+        }
+
+        .result-tags {
+            margin-top: 8px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+
+        .result-tag {
+            background: var(--surface-light);
+            color: var(--text-muted);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+        }
+
+        .no-results {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--text-muted);
+        }
+
+        .no-results i {
+            font-size: 48px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        /* Overlay */
+        .panel-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .panel-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .app-container {
+                flex-direction: column;
+            }
+
+            .chat-panel, .pdf-panel {
+                flex: 1;
+            }
+
+            .pdf-panel {
+                border-top: 1px solid var(--border);
+            }
+
+            .image-search-panel {
+                width: 100%;
+            }
+        }
+
+        /* Tooltips */
+        .tooltip {
+            position: relative;
+        }
+
+        .tooltip:hover::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--surface);
+            color: var(--text);
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 12px;
+            white-space: nowrap;
+            margin-bottom: 8px;
+            box-shadow: 0 4px 12px var(--shadow);
+            z-index: 1000;
+        }
+
+        /* Image preview in search results */
+        .image-preview-modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.9);
+            z-index: 2000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .image-preview-modal.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .image-preview-content {
+            max-width: 90%;
+            max-height: 90%;
+            position: relative;
+        }
+
+        .image-preview-content img {
+            max-width: 100%;
+            max-height: 85vh;
+            border-radius: 12px;
+        }
+
+        .image-preview-close {
+            position: absolute;
+            top: -40px;
+            right: 0;
+            background: transparent;
+            border: none;
+            color: white;
+            font-size: 24px;
+            cursor: pointer;
+        }
+
+        .image-preview-info {
+            background: var(--surface);
+            padding: 16px;
+            border-radius: 12px;
+            margin-top: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Upload Screen -->
+        <div class="upload-screen" id="uploadScreen">
+            <div class="upload-container">
+                <div class="upload-icon">
+                    <i class="fas fa-file-pdf"></i>
+                </div>
+                <h1 class="upload-title">CAD Document Assistant</h1>
+                <p class="upload-subtitle">Upload your architectural drawings and start chatting</p>
+                
+                <div class="file-drop-zone" id="dropZone">
+                    <i class="fas fa-cloud-upload-alt" style="font-size: 48px; color: var(--primary); margin-bottom: 16px;"></i>
+                    <p style="font-size: 16px; margin-bottom: 8px;">Drag & drop your PDF here</p>
+                    <p style="font-size: 14px; color: var(--text-muted);">or click to browse</p>
+                    <input type="file" id="fileInput" accept=".pdf" style="display: none;">
+                </div>
+
+                <div class="file-info" id="fileInfo">
+                    <p style="color: var(--text-muted); margin-bottom: 8px;">Selected file:</p>
+                    <p id="fileName" style="font-weight: 600; margin-bottom: 16px;"></p>
+                </div>
+
+                <button class="upload-btn" id="uploadBtn" disabled>
+                    <i class="fas fa-rocket" style="margin-right: 8px;"></i>
+                    Start Chat Session
+                </button>
+            </div>
+        </div>
+
+        <!-- Chat Panel -->
+        <div class="chat-panel">
+            <div class="chat-header">
+                <div class="chat-header-left">
+                    <div class="chat-logo">
+                        <i class="fas fa-drafting-compass"></i>
+                    </div>
+                    <div class="chat-title-group">
+                        <h1>CAD Assistant</h1>
+                        <p id="chatStatus">Ready to analyze your drawings</p>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <button class="icon-btn tooltip" data-tooltip="Image Search" id="imageSearchBtn">
+                        <i class="fas fa-images"></i>
+                    </button>
+                    <button class="icon-btn tooltip" data-tooltip="Clear Chat">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                    <button class="icon-btn tooltip" data-tooltip="Save History">
+                        <i class="fas fa-save"></i>
+                    </button>
+                    <button class="icon-btn tooltip" data-tooltip="Settings">
+                        <i class="fas fa-cog"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div class="chat-messages" id="chatMessages">
+                <div class="empty-state">
+                    <i class="fas fa-comments"></i>
+                    <p>Start asking questions about your CAD drawings</p>
+                </div>
+            </div>
+
+            <div class="chat-input-container">
+                <div class="chat-input-wrapper">
+                    <input 
+                        type="text" 
+                        id="chatInput" 
+                        placeholder="Ask about drawings, dimensions, symbols..."
+                        disabled
+                    >
+                    <button class="send-btn" id="sendBtn" disabled>
+                        <i class="fas fa-paper-plane"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- PDF Viewer Panel -->
+        <div class="pdf-panel">
+            <div class="pdf-header">
+                <div class="pdf-info">
+                    <h2>Document Viewer</h2>
+                    <p id="pdfFileName">No document loaded</p>
+                </div>
+                <div class="pdf-controls">
+                    <div class="page-nav">
+                        <button class="icon-btn" id="prevPage" disabled>
+                            <i class="fas fa-chevron-left"></i>
+                        </button>
+                        <span class="page-info">
+                            <span id="currentPage">-</span> / <span id="totalPages">-</span>
+                        </span>
+                        <button class="icon-btn" id="nextPage" disabled>
+                            <i class="fas fa-chevron-right"></i>
+                        </button>
+                    </div>
+                    <button class="icon-btn tooltip" data-tooltip="Zoom Out" id="zoomOut" disabled>
+                        <i class="fas fa-search-minus"></i>
+                    </button>
+                    <button class="icon-btn tooltip" data-tooltip="Zoom In" id="zoomIn" disabled>
+                        <i class="fas fa-search-plus"></i>
+                    </button>
+                    <button class="icon-btn tooltip" data-tooltip="Download" id="downloadPdf" disabled>
+                        <i class="fas fa-download"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div class="pdf-viewer-container" id="pdfViewerContainer">
+                <div class="empty-state">
+                    <i class="fas fa-file-pdf"></i>
+                    <p>Upload a PDF to view it here</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Image Search Panel -->
+        <div class="panel-overlay" id="panelOverlay"></div>
+        <div class="image-search-panel" id="imageSearchPanel">
+            <div class="image-search-header">
+                <h3><i class="fas fa-search"></i> Image Search</h3>
+                <button class="close-panel-btn" id="closePanelBtn">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="image-search-content">
+                <!-- Text Search -->
+                <div class="search-input-group">
+                    <label>Search by Text</label>
+                    <div class="search-input-wrapper">
+                        <input type="text" id="imageSearchInput" placeholder="e.g., fire extinguisher, electrical outlet...">
+                        <button class="search-btn" id="textSearchBtn">
+                            <i class="fas fa-search"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Image Upload Search -->
+                <div class="search-input-group">
+                    <label>Search by Image</label>
+                    <div class="image-upload-zone" id="imageUploadZone">
+                        <i class="fas fa-image"></i>
+                        <p>Drop an image or click to upload</p>
+                        <input type="file" id="imageSearchFile" accept="image/*" style="display: none;">
+                    </div>
+                </div>
+
+                <!-- Search Results -->
+                <div class="search-input-group">
+                    <label>Search Results</label>
+                    <div class="search-results" id="searchResults">
+                        <div class="no-results">
+                            <i class="fas fa-search"></i>
+                            <p>Enter a search term or upload an image to find similar drawings</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Image Preview Modal -->
+        <div class="image-preview-modal" id="imagePreviewModal">
+            <div class="image-preview-content">
+                <button class="image-preview-close" id="closePreviewBtn">
+                    <i class="fas fa-times"></i>
+                </button>
+                <img id="previewImage" src="" alt="Preview">
+                <div class="image-preview-info" id="previewInfo"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="chat_interface.js"></script>
+</body>
+</html>
