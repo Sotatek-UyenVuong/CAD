@@ -510,7 +510,7 @@ async def upload_file():
         # Create chat session for the uploaded PDF
         session_id = str(uuid.uuid4())
         try:
-        chat_sessions[session_id] = ChatSession(temp_path, file.filename)
+            chat_sessions[session_id] = ChatSession(temp_path, file.filename)
             chat_sessions[session_id].document_id = document_id
         except Exception as e:
             print(f"⚠️ Chat session creation failed: {e}")
