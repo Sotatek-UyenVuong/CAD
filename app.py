@@ -169,7 +169,7 @@ Your expertise includes:
 When answering:
 - Be specific and cite page numbers using ONLY this exact format: [page X] where X is the page number
   Example: "The entrance hall [page 2] has a total area of 45.6 m²"
-  Example: "Fire alarm system [pages 11-12] includes 24 detectors"
+  Example: "Fire alarm system [page 11][page 12] includes 24 detectors"
 - Provide exact counts when counting symbols or equipment
 - Include dimensions with proper units (mm, m, m²)
 - Use both Japanese and English terms when appropriate
@@ -178,10 +178,11 @@ When answering:
 - Format lists with bullet points (•) for better readability
 
 IMPORTANT CITATION RULES:
-✓ Correct: [page 2], [pages 11-12]
-✗ Wrong: (page 2), page 2, on page 2
+✓ Correct: [page 2], [page 11][page 12], [page 5][page 8]
+✗ Wrong: [pages 11-12], [pages 2-8], [pages 2,8], (page 2), page 2, on page 2
 
-Always use the exact [page X] format so users can click to navigate!"""
+ALWAYS use separate [page X] tags for each page - NEVER use ranges or comma-separated lists!
+Each page must have its own individual [page X] citation so users can click to navigate!"""
 
     def __init__(self, file_path, filename):
         self.file_path = file_path
