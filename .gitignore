@@ -19,15 +19,18 @@ dist/
 
 # Output
 output/
+output_boxes/
+output_dxf/
 *.json
 !schema_*.json
 !requirements.json
 
-# Images
+# Images & rendered data
 *.png
 *.jpg
 *.jpeg
 !docs/images/
+rendered_*/
 
 # IDE
 .vscode/
@@ -48,3 +51,29 @@ temp/
 *.docs
 *.pdf
 *.data
+
+# Dataset & training artifacts
+dataset/
+dataset copy/
+coco_dataset/
+runs/
+pretrained/
+
+# Model weights
+*.pt
+*.pth
+*.pkl
+*.onnx
+
+# Software packages
+*.deb
+*.rpm
+*.dmg
+*.exe
+
+# CAD data files
+*.zip
+*.dxf
+*.dwg
+*.xml
+260316_*/

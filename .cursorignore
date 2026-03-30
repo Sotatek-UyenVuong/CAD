@@ -1,0 +1,14 @@
+# Ignore large rendered PNG folders
+rendered_*/
+
+# Ignore large binary/archive files
+*.zip
+*.deb
+*.pdf
+*.dxf
+
+# Ignore dataset images
+dataset/
+
+# Ignore output
+output_dxf/
