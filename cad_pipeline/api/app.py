@@ -1,0 +1,870 @@
+"""api/app.py — FastAPI server exposing the CAD pipeline as REST endpoints.
+
+Endpoints:
+  POST /upload                   → Upload & index a file
+  POST /qa                       → Q&A query (text; optional image for search)
+  POST /search                   → Semantic text search (JSON)
+  GET  /tools/search/suggest     → Instant file/folder name lookup (no AI, for live typeahead)
+  POST /tools/search             → Semantic search: text + optional image (multipart, on Enter)
+  GET  /folders                  → List all folders
+  GET  /folders/{id}/files       → List files in folder
+  GET  /files/{id}/pages         → List pages in file
+  GET  /tools/count              → Count symbols by keyword
+  GET  /tools/area/units         → List unit types with areas
+  GET  /health                   → Health check
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import mimetypes
+import os
+import queue
+import shutil
+import tempfile
+import threading
+import uuid
+from pathlib import Path
+from typing import Annotated
+
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, BackgroundTasks, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from cad_pipeline.api.auth import get_current_user, require_role, router as auth_router, decode_token
+from cad_pipeline.agents.router import classify_query
+from cad_pipeline.config import LOCAL_IMAGES_DIR, USE_S3, REPORTS_DIR
+from cad_pipeline.pipeline.upload_pipeline import run_upload_pipeline
+from cad_pipeline.pipeline.qa_pipeline import run_qa
+from cad_pipeline.pipeline.search_pipeline import run_search
+from cad_pipeline.pipeline.delete_pipeline import delete_file as _delete_file, delete_folder as _delete_folder
+from cad_pipeline.storage import mongo
+from cad_pipeline.tools.count_tool import (
+    run_count_tool,
+    list_symbol_groups,
+)
+from cad_pipeline.tools.area_tool import (
+    run_area_tool,
+    get_all_units_summary,
+    list_unit_types,
+    get_unit_area,
+)
+from cad_pipeline.tools.search_tool import run_search_tool
+
+app = FastAPI(
+    title="CAD Pipeline API",
+    description="Upload CAD drawings, index them, and run Q&A or semantic search.",
+    version="1.0.0",
+)
+
+app.include_router(auth_router)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Serve page/block images locally when USE_S3=false
+# Accessible at: GET /images/{file_id}/pages/page_N.png
+if not USE_S3:
+    LOCAL_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    app.mount("/images", StaticFiles(directory=LOCAL_IMAGES_DIR, follow_symlink=True), name="images")
+
+# Shared directory for generated reports (PDF / Excel)
+# Accessible at: GET /reports/{filename}
+_REPORTS_DIR = REPORTS_DIR
+
+
+def _attach_report_download_url(result: dict) -> dict:
+    """If tool_result has generated report file, expose stable download_url."""
+    tool = result.get("tool_result") or {}
+    if tool.get("format") not in ("pdf", "excel"):
+        return result
+    if not tool.get("file_path"):
+        return result
+
+    src = Path(tool["file_path"])
+    if not src.exists():
+        return result
+
+    if src.resolve().parent != _REPORTS_DIR.resolve():
+        dst = _REPORTS_DIR / src.name
+        shutil.move(str(src), str(dst))
+        src = dst
+    result["download_url"] = f"/reports/{src.name}"
+    return result
+
+
+def _sse_event(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+# ── In-progress upload tracking ────────────────────────────────────────────
+
+_upload_status: dict[str, dict] = {}
+_qa_jobs: dict[str, dict] = {}
+
+
+# ── Health ─────────────────────────────────────────────────────────────────
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": "cad_pipeline"}
+
+
+# ── Upload ─────────────────────────────────────────────────────────────────
+
+class UploadResponse(BaseModel):
+    job_id: str
+    file_id: str
+    status: str
+
+
+@app.post("/upload", response_model=UploadResponse)
+async def upload_file(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    folder_id: str = Form("default"),
+    folder_name: str = Form("Default Folder"),
+    file_id: str = Form(None),
+    _user: dict = Depends(require_role("viewer", "user", "editor", "admin")),
+):
+    """Upload a PDF or image file to index into the pipeline."""
+    job_id = str(uuid.uuid4())
+    fid = file_id or str(uuid.uuid4())[:8]
+
+    # Save upload to temp file
+    suffix = Path(file.filename or "upload.pdf").suffix
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    content = await file.read()
+    tmp.write(content)
+    tmp.flush()
+    tmp_path = Path(tmp.name)
+    tmp.close()
+
+    _upload_status[job_id] = {"status": "processing", "progress": [], "file_id": fid}
+
+    def _progress(msg: str) -> None:
+        _upload_status[job_id]["progress"].append(msg)
+
+    def _run() -> None:
+        try:
+            result = run_upload_pipeline(
+                file_path=tmp_path,
+                file_id=fid,
+                file_name=file.filename,
+                folder_id=folder_id,
+                folder_name=folder_name,
+                progress_callback=_progress,
+            )
+            _upload_status[job_id]["status"] = "done"
+            _upload_status[job_id]["result"] = result
+        except Exception as exc:
+            _upload_status[job_id]["status"] = "error"
+            _upload_status[job_id]["error"] = str(exc)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    background_tasks.add_task(_run)
+
+    return UploadResponse(job_id=job_id, file_id=fid, status="processing")
+
+
+@app.get("/upload/{job_id}/status")
+def upload_status(job_id: str):
+    """Poll upload job status."""
+    status = _upload_status.get(job_id)
+    if not status:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return status
+
+
+# ── Q&A ────────────────────────────────────────────────────────────────────
+
+class QARequest(BaseModel):
+    query: str
+    folder_id: str
+    session_id: str | None = None
+    file_id: str | None = None
+
+
+class StartQAJobResponse(BaseModel):
+    job_id: str
+    status: str
+
+
+@app.post("/qa")
+def qa_endpoint(req: QARequest, _user: dict = Depends(get_current_user)):
+    """Ask a text question about documents in a folder.
+    For image-based queries use POST /qa/image (multipart).
+    """
+    query_type = classify_query(req.query)
+
+    if query_type == "search":
+        results = run_search(
+            query=req.query,
+            folder_id=req.folder_id,
+            file_id=req.file_id,
+        )
+        return {"query_type": "search", "results": results}
+
+    scope_id = req.session_id or req.folder_id
+    session_doc = mongo.get_chat_session(scope_id, user_email=_user["email"])
+    session_file_ids = session_doc.get("file_ids") if session_doc else None
+
+    result = run_qa(
+        query=req.query,
+        folder_id=scope_id,
+        file_id=req.file_id,
+        session_file_ids=session_file_ids,
+        user_email=_user["email"],
+    )
+    return _attach_report_download_url(result)
+
+
+@app.post("/qa/stream")
+def qa_stream_endpoint(req: QARequest, _user: dict = Depends(get_current_user)):
+    """Stream Q&A progress + answer chunks (SSE)."""
+    events: queue.Queue[tuple[str, dict]] = queue.Queue()
+    streamed_any_delta = False
+
+    def _emit_step(step: str) -> None:
+        events.put(("step", {"message": step}))
+
+    def _emit_delta(text: str) -> None:
+        nonlocal streamed_any_delta
+        if not text:
+            return
+        streamed_any_delta = True
+        events.put(("delta", {"text": text}))
+
+    def _run() -> None:
+        try:
+            scope_id = req.session_id or req.folder_id
+            session_doc = mongo.get_chat_session(scope_id, user_email=_user["email"])
+            session_file_ids = session_doc.get("file_ids") if session_doc else None
+            result = run_qa(
+                query=req.query,
+                folder_id=scope_id,
+                file_id=req.file_id,
+                session_file_ids=session_file_ids,
+                user_email=_user["email"],
+                progress_callback=_emit_step,
+                answer_stream_callback=_emit_delta,
+            )
+            result = _attach_report_download_url(result)
+            answer = str(result.get("answer") or "")
+            if answer and not streamed_any_delta:
+                chunk_size = 120
+                for i in range(0, len(answer), chunk_size):
+                    events.put(("delta", {"text": answer[i:i + chunk_size]}))
+            events.put(("final", result))
+        except Exception as exc:
+            events.put(("error", {"message": str(exc)}))
+        finally:
+            events.put(("done", {}))
+
+    threading.Thread(target=_run, daemon=True).start()
+
+    def _stream():
+        yield _sse_event("open", {"status": "ok"})
+        while True:
+            try:
+                event, payload = events.get(timeout=20)
+                yield _sse_event(event, payload)
+                if event == "done":
+                    break
+            except queue.Empty:
+                yield ": keep-alive\n\n"
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
+
+
+@app.post("/qa/jobs", response_model=StartQAJobResponse)
+def start_qa_job(
+    req: QARequest,
+    background_tasks: BackgroundTasks,
+    _user: dict = Depends(get_current_user),
+):
+    """Start an async Q&A job and report pipeline progress by polling."""
+    job_id = str(uuid.uuid4())
+    _qa_jobs[job_id] = {
+        "status": "processing",
+        "user_email": _user["email"],
+        "query": req.query,
+        "folder_id": req.session_id or req.folder_id,
+        "file_id": req.file_id,
+        "steps": [],
+        "current_step": "",
+        "result": None,
+        "error": None,
+    }
+
+    def _append_step(step: str) -> None:
+        payload = _qa_jobs.get(job_id)
+        if not payload:
+            return
+        payload["steps"].append(step)
+        payload["current_step"] = step
+
+    def _run() -> None:
+        try:
+            scope_id = req.session_id or req.folder_id
+            session_doc = mongo.get_chat_session(scope_id, user_email=_user["email"])
+            session_file_ids = session_doc.get("file_ids") if session_doc else None
+            result = run_qa(
+                query=req.query,
+                folder_id=scope_id,
+                file_id=req.file_id,
+                session_file_ids=session_file_ids,
+                user_email=_user["email"],
+                progress_callback=_append_step,
+            )
+            payload = _qa_jobs.get(job_id)
+            if payload is None:
+                return
+            payload["result"] = _attach_report_download_url(result)
+            payload["status"] = "done"
+        except Exception as exc:
+            payload = _qa_jobs.get(job_id)
+            if payload is None:
+                return
+            payload["status"] = "error"
+            payload["error"] = str(exc)
+
+    background_tasks.add_task(_run)
+    return StartQAJobResponse(job_id=job_id, status="processing")
+
+
+@app.get("/qa/jobs/{job_id}")
+def get_qa_job_status(job_id: str, _user: dict = Depends(get_current_user)):
+    payload = _qa_jobs.get(job_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail="QA job not found")
+    if payload.get("user_email") != _user["email"]:
+        raise HTTPException(status_code=404, detail="QA job not found")
+    return {k: v for k, v in payload.items() if k != "user_email"}
+
+
+@app.post("/qa/image")
+async def qa_image_endpoint(
+    query: Annotated[str, Form()] = "",
+    folder_id: Annotated[str, Form()] = "",
+    session_id: Annotated[str | None, Form()] = None,
+    file_id: Annotated[str | None, Form()] = None,
+    image: Annotated[UploadFile | None, File()] = None,
+    _user: dict = Depends(get_current_user),
+):
+    """Q&A with optional image upload.
+
+    Accepts multipart/form-data:
+      - query     : text question (optional if image provided)
+      - folder_id : folder to scope search
+      - file_id   : file to scope search (optional)
+      - image     : image file (PNG/JPG/WebP, optional)
+
+    When an image is provided and the intent is "search", runs image-based
+    semantic search (Gemini describes the image → embed → Qdrant top-10).
+    Otherwise runs the standard Q&A pipeline with the image for additional
+    context.
+    """
+    scope_id = session_id or folder_id
+    if not scope_id:
+        raise HTTPException(status_code=422, detail="folder_id or session_id is required")
+
+    img_bytes: bytes | None = None
+    if image and image.filename:
+        img_bytes = await image.read()
+
+    # Image only → force search_tool
+    if img_bytes and not query:
+        result = run_search_tool(
+            query=None,
+            image_bytes=img_bytes,
+            folder_id=folder_id or None,
+            file_id=file_id,
+            top_n=10,
+        )
+        return {"query_type": "search", "tool_result": result, **result}
+
+    result = run_qa(
+        query=query,
+        folder_id=scope_id,
+        file_id=file_id,
+        session_file_ids=(mongo.get_chat_session(scope_id, user_email=_user["email"]) or {}).get("file_ids"),
+        user_email=_user["email"],
+        image_bytes=img_bytes,
+    )
+
+    return _attach_report_download_url(result)
+
+
+# ── Reports download ───────────────────────────────────────────────────────
+
+@app.get("/reports/{filename}")
+def download_report(filename: str):
+    """Download a generated PDF or Excel report by filename."""
+    filepath = _REPORTS_DIR / filename
+    if not filepath.exists() or not filepath.is_file():
+        raise HTTPException(status_code=404, detail=f"Report '{filename}' not found.")
+    # Prevent path traversal
+    try:
+        filepath.resolve().relative_to(_REPORTS_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid filename.")
+    media = (
+        "application/pdf" if filename.endswith(".pdf")
+        else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        if filename.endswith(".xlsx")
+        else "application/octet-stream"
+    )
+    return FileResponse(path=str(filepath), media_type=media, filename=filename)
+
+
+# ── Search ─────────────────────────────────────────────────────────────────
+
+class SearchRequest(BaseModel):
+    query: str
+    top_k: int = 10
+    folder_id: str | None = None
+    file_id: str | None = None
+
+
+@app.post("/search")
+def search_endpoint(req: SearchRequest, _user: dict = Depends(get_current_user)):
+    """Semantic text search (JSON body)."""
+    results = run_search(
+        query=req.query,
+        top_k=req.top_k,
+        folder_id=req.folder_id,
+        file_id=req.file_id,
+    )
+    return {"results": results, "total": len(results)}
+
+
+@app.post("/tools/search")
+async def tools_search_endpoint(
+    query: Annotated[str, Form()] = "",
+    folder_id: Annotated[str | None, Form()] = None,
+    file_id: Annotated[str | None, Form()] = None,
+    top_n: Annotated[int, Form()] = 10,
+    image: Annotated[UploadFile | None, File()] = None,
+    _user: dict = Depends(get_current_user),
+):
+    """Semantic search tool: text + optional image (multipart/form-data).
+
+    Fields:
+      - query     : search text (optional if image provided)
+      - folder_id : restrict to folder (optional)
+      - file_id   : restrict to file (optional)
+      - top_n     : max results (default 10)
+      - image     : image file (PNG/JPG/WebP, optional)
+                    → Gemini Flash describes the image
+                    → description is appended to query before embedding
+
+    Returns top-N pages sorted by vector similarity with:
+      rank, file_name, page_number, image_url, short_summary, vector_score,
+      plus query_used and image_description.
+    """
+    img_bytes: bytes | None = None
+    if image and image.filename:
+        img_bytes = await image.read()
+
+    if not query and not img_bytes:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide at least one of: query (text) or image file.",
+        )
+
+    result = run_search_tool(
+        query=query or None,
+        image_bytes=img_bytes,
+        folder_id=folder_id,
+        file_id=file_id,
+        top_n=top_n,
+    )
+    return result
+
+
+@app.get("/tools/search/suggest")
+def search_suggest(
+    q: str,
+    limit: int = 20,
+    folder_id: str | None = None,
+    _user: dict = Depends(get_current_user),
+):
+    """Instant file/folder typeahead — no AI, no embeddings.
+
+    Called on every keystroke; returns matching files and folders
+    directly from MongoDB using a case-insensitive regex on file_name,
+    original_name, and tags.  When `folder_id` is supplied the search
+    is scoped to that folder.
+
+    Query params:
+      q         : search text (required, min 1 char)
+      limit     : max files to return (default 20)
+      folder_id : optional folder scope
+
+    Response shape:
+    ```json
+    {
+      "query": "D318",
+      "files": [
+        {
+          "file_id":     "…",
+          "file_name":   "竣工図.pdf",
+          "folder_id":   "…",
+          "folder_name": "建築意匠図",
+          "total_pages": 334,
+          "tags":        ["竣工図", "意匠"]
+        }
+      ],
+      "folders": [
+        {
+          "folder_id":  "…",
+          "name":       "建築意匠図",
+          "file_count": 12
+        }
+      ],
+      "total_files":   1,
+      "total_folders": 0
+    }
+    ```
+    """
+    if not q or not q.strip():
+        raise HTTPException(status_code=422, detail="q must be a non-empty string.")
+
+    files   = mongo.search_files(q.strip(), limit=limit, folder_id=folder_id)
+    folders = mongo.search_folders(q.strip(), limit=10) if not folder_id else []
+
+    return {
+        "query":         q.strip(),
+        "files":         files,
+        "folders":       folders,
+        "total_files":   len(files),
+        "total_folders": len(folders),
+    }
+
+
+# ── Folders & Files ────────────────────────────────────────────────────────
+
+class CreateFolderRequest(BaseModel):
+    folder_id: str
+    name: str
+    summary: str = ""
+
+
+class UpdateChatSessionSourcesRequest(BaseModel):
+    folder_id: str | None = None
+    file_ids: list[str]
+
+
+@app.post("/folders", status_code=201)
+def create_folder(
+    req: CreateFolderRequest,
+    _user: dict = Depends(require_role("viewer", "user", "editor", "admin")),
+):
+    """Create a new folder (editor or admin only)."""
+    existing = mongo.get_folder(req.folder_id)
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Folder '{req.folder_id}' already exists")
+    mongo.upsert_folder(req.folder_id, req.name, req.summary)
+    return {"folder_id": req.folder_id, "name": req.name}
+
+
+@app.get("/folders")
+def list_folders(_user: dict = Depends(get_current_user)):
+    folders = mongo.list_folders()
+    for f in folders:
+        f["id"] = str(f.pop("_id", ""))
+    return {"folders": folders}
+
+
+@app.get("/folders/{folder_id}/files")
+def list_files(folder_id: str, _user: dict = Depends(get_current_user)):
+    files = mongo.list_files(folder_id)
+    for f in files:
+        f["id"] = str(f.pop("_id", ""))
+    return {"files": files}
+
+
+@app.get("/files/{file_id}/pages")
+def list_pages(file_id: str, _user: dict = Depends(get_current_user)):
+    pages = mongo.get_pages_by_file(
+        file_id,
+        projection={"page_number": 1, "image_url": 1, "short_summary": 1},
+    )
+    for p in pages:
+        p["id"] = str(p.pop("_id", ""))
+    return {"pages": pages}
+
+
+@app.get("/files/{file_id}")
+def get_file_meta(file_id: str, _user: dict = Depends(get_current_user)):
+    file_doc = mongo.get_file(file_id)
+    if not file_doc:
+        raise HTTPException(status_code=404, detail="File not found")
+    return {
+        "id": str(file_doc.get("_id", file_id)),
+        "file_name": file_doc.get("file_name", file_id),
+        "folder_id": file_doc.get("folder_id", ""),
+        "total_pages": int(file_doc.get("total_pages") or 0),
+        "updated_at": file_doc.get("updated_at"),
+    }
+
+
+@app.get("/files/{file_id}/pages/{page_number}")
+def get_page_detail(
+    file_id: str,
+    page_number: int,
+    _user: dict = Depends(get_current_user),
+):
+    """Get full page detail including blocks and context_md for the Blocks tab."""
+    pages = mongo.get_pages_by_file(
+        file_id,
+        projection={
+            "page_number": 1,
+            "image_url": 1,
+            "short_summary": 1,
+            "context_md": 1,
+            "blocks": 1,
+        },
+    )
+    page = next((p for p in pages if p.get("page_number") == page_number), None)
+    if not page:
+        raise HTTPException(status_code=404, detail=f"Page {page_number} not found in file {file_id}")
+    page["id"] = str(page.pop("_id", ""))
+    return page
+
+
+@app.api_route("/files/{file_id}/original", methods=["GET", "HEAD"])
+def get_original_file(
+    file_id: str,
+    request: Request,
+    access_token: str | None = None,
+):
+    """Stream the original uploaded file (PDF/DXF/other) for preview/download."""
+    # Support both Authorization header and token query for iframe/img preview,
+    # where setting custom headers is not always convenient.
+    token: str | None = None
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+    elif access_token:
+        token = access_token
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization required")
+    decode_token(token)
+
+    file_doc = mongo.get_file(file_id)
+    if not file_doc:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    file_url = file_doc.get("file_url")
+    if not file_url:
+        raise HTTPException(status_code=404, detail="Original file URL not found")
+
+    path = Path(str(file_url))
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Original file not found on disk")
+
+    media_type, _ = mimetypes.guess_type(path.name)
+    return FileResponse(
+        path=str(path),
+        filename=file_doc.get("file_name") or path.name,
+        media_type=media_type or "application/octet-stream",
+        content_disposition_type="inline",
+    )
+
+
+# ── Delete ─────────────────────────────────────────────────────────────────
+
+@app.delete("/files/{file_id}")
+def delete_file_endpoint(
+    file_id: str,
+    folder_id: str,
+    _user: dict = Depends(require_role("admin")),
+):
+    """Delete a file and all its data; rebuilds folder summary. Admin only."""
+    file_doc = mongo.get_file(file_id)
+    if not file_doc:
+        raise HTTPException(status_code=404, detail="File not found")
+    result = _delete_file(file_id=file_id, folder_id=folder_id)
+    return result
+
+
+@app.delete("/folders/{folder_id}")
+def delete_folder_endpoint(
+    folder_id: str,
+    _user: dict = Depends(require_role("admin")),
+):
+    """Delete a folder and all its files, pages, vectors, and chat history. Admin only."""
+    folder = mongo.get_folder(folder_id)
+    if not folder:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    result = _delete_folder(folder_id=folder_id)
+    mongo.delete_chat_sessions_by_folder(folder_id)
+    return result
+
+
+# ── Chat history ────────────────────────────────────────────────────────────
+
+@app.get("/folders/{folder_id}/chat-history")
+def get_chat_history(folder_id: str, _user: dict = Depends(get_current_user)):
+    """Get the last 5 chat turns for a folder."""
+    turns = mongo.get_chat_history(folder_id, user_email=_user["email"])
+    return {"folder_id": folder_id, "turns": turns}
+
+
+@app.delete("/folders/{folder_id}/chat-history")
+def clear_chat_history(
+    folder_id: str,
+    _user: dict = Depends(get_current_user),
+):
+    """Clear chat history for a folder."""
+    mongo.delete_chat_history(folder_id, user_email=_user["email"])
+    return {"folder_id": folder_id, "cleared": True}
+
+
+@app.get("/chat-sessions/{session_id}")
+def get_chat_session_state(session_id: str, _user: dict = Depends(get_current_user)):
+    doc = mongo.get_chat_session(session_id, user_email=_user["email"])
+    if not doc:
+        return {"session_id": session_id, "folder_id": session_id, "file_ids": [], "exists": False}
+    return {
+        "session_id": str(doc.get("session_id", session_id)),
+        "folder_id": doc.get("folder_id", session_id),
+        "file_ids": doc.get("file_ids", []),
+        "exists": True,
+    }
+
+
+@app.get("/chat-sessions")
+def list_chat_sessions(_user: dict = Depends(get_current_user)):
+    """List current user's chat sessions (user-scoped, not shared)."""
+    rows = mongo.list_user_chat_sessions(_user["email"])
+    result: list[dict] = []
+    for row in rows:
+        session_id = str(row.get("session_id") or row.get("folder_id") or "")
+        if not session_id:
+            continue
+        folder_id = str(row.get("folder_id") or session_id)
+        folder = mongo.get_folder(folder_id) or {}
+        file_ids = row.get("file_ids", []) or []
+        if folder:
+            folder_name = folder.get("name", folder_id)
+            file_count = len(mongo.list_files(folder_id))
+        else:
+            folder_name = session_id
+            file_count = len(file_ids)
+        result.append(
+            {
+                "session_id": session_id,
+                "folder_id": folder_id,
+                "folder_name": folder_name,
+                "file_count": file_count,
+                "updated_at": row.get("updated_at"),
+            }
+        )
+    return {"sessions": result}
+
+
+@app.delete("/chat-sessions/{session_id}")
+def delete_chat_session_state(
+    session_id: str,
+    clear_history: bool = True,
+    _user: dict = Depends(get_current_user),
+):
+    """Delete chat-session state only (does NOT delete folder/files)."""
+    doc = mongo.get_chat_session(session_id, user_email=_user["email"])
+    folder_id = (doc or {}).get("folder_id", session_id)
+    deleted_session = mongo.delete_chat_session(session_id, user_email=_user["email"])
+    if clear_history:
+        mongo.delete_chat_history(folder_id, user_email=_user["email"])
+    return {
+        "session_id": session_id,
+        "folder_id": folder_id,
+        "deleted_session": deleted_session,
+        "cleared_history": clear_history,
+    }
+
+
+@app.put("/chat-sessions/{session_id}/sources")
+def update_chat_session_sources(
+    session_id: str,
+    req: UpdateChatSessionSourcesRequest,
+    _user: dict = Depends(get_current_user),
+):
+    file_ids = [fid for fid in req.file_ids if mongo.get_file(fid) is not None]
+    folder_id = req.folder_id or (mongo.get_chat_session(session_id, user_email=_user["email"]) or {}).get("folder_id") or session_id
+    mongo.upsert_chat_session_sources(
+        session_id=session_id,
+        folder_id=folder_id,
+        file_ids=file_ids,
+        user_email=_user["email"],
+    )
+    return {"session_id": session_id, "folder_id": folder_id, "file_ids": file_ids, "exists": True}
+
+
+# ── Tools ──────────────────────────────────────────────────────────────────
+
+@app.get("/tools/count/groups")
+def get_symbol_groups(_user: dict = Depends(get_current_user)):
+    """List all symbol group names available in the symbol database."""
+    return {"groups": list_symbol_groups()}
+
+
+@app.get("/tools/count")
+def count_symbols(
+    keyword: str,
+    use_symbol_db: bool = True,
+    _user: dict = Depends(get_current_user),
+):
+    """Count symbols matching a keyword or group name."""
+    result = run_count_tool(query=keyword, use_symbol_db=use_symbol_db)
+    return result
+
+
+@app.get("/tools/area/units")
+def get_unit_list(_user: dict = Depends(get_current_user)):
+    """List all apartment unit types with their floor areas."""
+    return {"units": get_all_units_summary()}
+
+
+@app.get("/tools/area/units/{unit_label}")
+def get_unit_detail(unit_label: str, _user: dict = Depends(get_current_user)):
+    """Get detailed room breakdown for a specific unit type."""
+    return get_unit_area(unit_label)
+
+
+@app.post("/tools/count/context")
+def count_in_page_context(query: str, page_id: str):
+    """Count objects in a specific page's context using LLM."""
+    page = mongo.get_page(page_id)
+    if not page:
+        raise HTTPException(status_code=404, detail="Page not found")
+    context_md = page.get("context_md", "")
+    result = run_count_tool(query=query, context_md=context_md, use_symbol_db=False)
+    return result
+
+
+@app.post("/tools/area/context")
+def area_in_page_context(query: str, page_id: str):
+    """Calculate area from a specific page's context using LLM."""
+    page = mongo.get_page(page_id)
+    if not page:
+        raise HTTPException(status_code=404, detail="Page not found")
+    context_md = page.get("context_md", "")
+    result = run_area_tool(query=query, context_md=context_md)
+    return result
+
+
+# ── Entry point ────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("cad_pipeline.api.app:app", host="0.0.0.0", port=8001, reload=True)

@@ -16,6 +16,7 @@ dist/
 .env
 .env.local
 *.env
+Untitled
 
 # Output
 output/
@@ -77,3 +78,7 @@ pretrained/
 *.dwg
 *.xml
 260316_*/
+
+# Large local exports & source CAD trees (keep out of git)
+dxf_output/
+cad_pipeline/TAE/

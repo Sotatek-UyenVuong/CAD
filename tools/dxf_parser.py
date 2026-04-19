@@ -694,6 +694,38 @@ class DXFParser:
 
     # ── Markdown export ───────────────────────────────────────────────────────
 
+    def _try_gen_grid_md(self) -> str | None:
+        """Delegate to gen_grid_md (ezdxf-based) for spec-sheet DXF files.
+
+        Returns the generated Markdown string, or None if gen_grid_md is
+        unavailable or the file is not a recognised spec-sheet.
+        """
+        try:
+            import sys as _sys
+            _tools_dir = str(Path(__file__).parent)
+            if _tools_dir not in _sys.path:
+                _sys.path.insert(0, _tools_dir)
+            import gen_grid_md as _ggm  # type: ignore[import]
+
+            # Only apply gen_grid_md to confirmed spec-sheet files to avoid
+            # running heavy ezdxf processing on every DXF.
+            _SPEC_MARKERS = {
+                # D003 trade-assignment table headers
+                "建築関係", "冷暖房換気設備関係", "電気設備関係",
+                "昇降機設備関係", "給排水設備関係", "機械駐車設備関係",
+                # D004 work-division diagram
+                "工事区分",
+                # General spec sheet keywords
+                "特記仕様書", "設備特記仕様書",
+            }
+            text_set = set(self.texts)
+            if not (text_set & _SPEC_MARKERS):
+                return None
+
+            return _ggm.generate(self.path)
+        except Exception:
+            return None
+
     def export_markdown(self, out_path: Path | None = None) -> Path:
         """Export analysis result to a Markdown file."""
         out_path = out_path or self.path.with_suffix(".md")
@@ -746,59 +778,23 @@ class DXFParser:
             lines.append("_No blocks found._")
 
         # ── Title Block (表題欄) ──────────────────────────────────────────────────
-        # Identify title-block texts: firm/architect info, project name, date, etc.
-        # Only match texts that are definitively title-block metadata:
-        # address+TEL, firm registration, architect license, date stamp.
-        # Company names (株式会社 etc.) only match when the text is SHORT (<= 40 chars).
-        _SCALE_HDR_RE = re.compile(r'^A\d:\d+/\s*\d+$')
+        tb_table = self._get_title_block_table()
+        if tb_table:
+            lines += ["", "## 表題欄 (Title Block)", "",
+                      "| 項目 | 内容 |", "|------|------|"]
+            for label, value in tb_table:
+                lines.append(f"| {label} | {value.replace('|', '｜')} |")
 
-        def _is_title_block(text: str) -> bool:
-            s = text.strip()
-            sc = re.sub(r'\s+', '', s)   # collapsed (no spaces)
-            # Phone/address line
-            if re.search(r'TEL[（(]', sc):
-                return True
-            # Architect licence e.g. "一級建築士登録　第255593号"
-            if re.search(r'[一二]級建築士登録', sc):
-                return True
-            # Firm registration e.g. "事務所（東京）登録第12258号"
-            if re.search(r'事務所.{0,10}登録\s*第\s*\d', sc):
-                return True
-            # Date stamp: YYYY.MM.DD or YYYY/MM/DD (standalone short text)
-            if re.fullmatch(r'\d{4}[./]\d{2}[./]\d{2}', s):
-                return True
-            # Company names — must be SHORT (≤20) and at start/end (not mid-sentence)
-            if len(sc) <= 20 and re.search(r'(株式会社|有限会社|合同会社)', sc):
-                return True
-            if re.fullmatch(r'(株式会社|有限会社|合同会社).{1,15}', sc):
-                return True
-            if re.fullmatch(r'.{1,15}(株式会社|有限会社|合同会社)', sc):
-                return True
-            return False
-
-        title_block_texts: list[str] = []
-        scale_notations: list[str] = []
-        seen_tb: set[str] = set()
-        for t in self.texts:
-            s = t.strip()
-            if _SCALE_HDR_RE.fullmatch(s):
-                if s not in seen_tb:
-                    scale_notations.append(s)
-                    seen_tb.add(s)
-            elif _is_title_block(s) and s not in seen_tb:
-                title_block_texts.append(s)
-                seen_tb.add(s)
-
-        if title_block_texts or scale_notations:
-            lines += ["", "## 表題欄 (Title Block)", ""]
-            for t in title_block_texts:
-                lines.append(f"- {t}")
-            if scale_notations:
-                lines += ["", f"**縮尺:** {' / '.join(scale_notations)}"]
-
-        # Try drawing-list table first, then spec layout, then flat list
+        # For spec sheets (D003/D004/D005): delegate entirely to gen_grid_md
+        # which uses ezdxf for accurate grid/text extraction.
         drawing_table = self._reconstruct_drawing_table()
-        spec_layout   = None if drawing_table else self._reconstruct_spec_document()
+        if not drawing_table:
+            spec_md = self._try_gen_grid_md()
+            if spec_md is not None:
+                out_path.write_text(spec_md, encoding="utf-8")
+                return out_path
+
+        spec_layout = None if drawing_table else self._reconstruct_spec_document()
 
         lines += ["", "## Text Content (テキスト)", ""]
         if drawing_table:
@@ -890,24 +886,6 @@ class DXFParser:
         return out_path
 
 
-    # ── HTML export ──────────────────────────────────────────────────────────────
-
-    def export_html(self, out_path: Path | None = None) -> Path:
-        """Export a multi-column HTML document that mirrors the DXF visual layout."""
-        if out_path is None:
-            out_path = self.path.with_suffix(".html")
-
-        title_block = self._build_title_block_info()
-        drawing_table = self._reconstruct_drawing_table()
-
-        if drawing_table:
-            html = self._render_html_drawing_list(drawing_table, title_block)
-        else:
-            html = self._render_html_spec(title_block)
-
-        out_path.write_text(html, encoding="utf-8")
-        return out_path
-
     def _parse_circles(self) -> list[tuple[float, float, float]]:
         """Return list of (cx, cy, radius) for all CIRCLE entities."""
         result: list[tuple[float, float, float]] = []
@@ -926,411 +904,48 @@ class DXFParser:
                 pass
         return result
 
-    def _build_title_block_info(self) -> dict[str, list[str]]:
+    def _get_title_block_table(self) -> list[tuple[str, str]]:
+        """Return [(label, value), ...] for title block texts, sorted top-to-bottom.
+
+        Labels are inferred from content patterns so the table self-documents
+        without needing label texts to be present in the DXF.
+        """
         _SCALE_HDR_RE = re.compile(r'^A\d:\d+/\s*\d+$')
 
-        def _is_tb(text: str) -> bool:
-            s  = text.strip()
+        def _classify(s: str) -> str | None:
             sc = re.sub(r'\s+', '', s)
-            if re.search(r'TEL[（(]', sc): return True
-            if re.search(r'[一二]級建築士登録', sc): return True
-            if re.search(r'事務所.{0,10}登録\s*第\s*\d', sc): return True
-            if re.fullmatch(r'\d{4}[./]\d{2}[./]\d{2}', s): return True
-            if len(sc) <= 20 and re.search(r'(株式会社|有限会社|合同会社)', sc): return True
-            return False
-
-        tb: list[str] = []
-        scales: list[str] = []
-        seen: set[str] = set()
-        for t in self.texts:
-            s = t.strip()
-            if s in seen: continue
-            seen.add(s)
+            if re.search(r'TEL[（(]', sc):
+                return '住所・TEL'
+            if re.search(r'事務所.{0,10}登録\s*第\s*\d', sc):
+                return '事務所登録'
+            if re.search(r'[一二]級建築士登録', sc):
+                return '設計者'
+            if re.fullmatch(r'\d{4}[./]\d{2}[./]\d{2}', s):
+                return '確認日'
             if _SCALE_HDR_RE.fullmatch(s):
-                scales.append(s)
-            elif _is_tb(s):
-                tb.append(s)
-        return {"texts": tb, "scales": scales}
+                return '縮尺'
+            if len(sc) <= 20 and re.search(r'(株式会社|有限会社|合同会社)', sc):
+                return '設計事務所'
+            if re.fullmatch(r'(株式会社|有限会社|合同会社).{1,15}', sc):
+                return '設計事務所'
+            if re.fullmatch(r'.{1,15}(株式会社|有限会社|合同会社)', sc):
+                return '設計事務所'
+            return None
 
-    def _render_html_drawing_list(self, rows: list[dict[str, str]],
-                                   title_block: dict[str, list[str]]) -> str:
-        def _esc(s: str) -> str:
-            return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        seen: set[str] = set()
+        # Collect with Y coordinate for spatial ordering (top → bottom)
+        items: list[tuple[float, str, str]] = []   # (-y, label, value)
+        for t, x, y in self.text_coords:
+            s = t.strip()
+            if not s or s in seen:
+                continue
+            label = _classify(s)
+            if label:
+                seen.add(s)
+                items.append((-y, label, s))
 
-        tb_html = ""
-        if title_block["texts"] or title_block["scales"]:
-            items = "".join(f"<li>{_esc(t)}</li>" for t in title_block["texts"])
-            scales = " / ".join(title_block["scales"])
-            tb_html = f"""
-<div class="title-block">
-  <ul>{items}</ul>
-  {"<p class='scale'>縮尺: " + _esc(scales) + "</p>" if scales else ""}
-</div>"""
-
-        rows_html = ""
-        for r in rows:
-            rows_html += f"<tr><td>{_esc(r['no'])}</td><td>{_esc(r['name'])}</td><td>{_esc(r['scale'])}</td></tr>\n"
-
-        return f"""<!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="utf-8">
-<title>{_esc(self.path.stem)}</title>
-<style>
-  body {{ font-family: "Helvetica Neue", Arial, "Hiragino Kaku Gothic Pro", Meiryo, sans-serif;
-         font-size: 13px; margin: 20px; color: #222; background: #fafafa; }}
-  h1   {{ font-size: 18px; border-bottom: 2px solid #555; padding-bottom: 6px; }}
-  .title-block {{ background: #f0f4f8; padding: 10px 16px; border-radius: 6px;
-                  margin-bottom: 16px; }}
-  .title-block ul {{ margin: 0; padding-left: 18px; }}
-  .title-block .scale {{ font-weight: bold; margin: 6px 0 0; }}
-  table {{ border-collapse: collapse; width: 100%; }}
-  th, td {{ border: 1px solid #ccc; padding: 5px 10px; text-align: left; }}
-  th {{ background: #e8ecf0; }}
-  tr:nth-child(even) {{ background: #f5f7fa; }}
-</style>
-</head>
-<body>
-<h1>図面リスト — {_esc(self.path.stem)}</h1>
-{tb_html}
-<table>
-<thead><tr><th>No.</th><th>図面名称</th><th>縮尺</th></tr></thead>
-<tbody>
-{rows_html}
-</tbody>
-</table>
-</body>
-</html>"""
-
-    def _render_html_spec(self, title_block: dict[str, list[str]]) -> str:
-        """Render a multi-column spec document as HTML.
-
-        Layout:
-          • Left narrative columns  (工事概要, 工事仕様, spec text) → flex columns
-          • 工事区分表 (row labels + ○ circles)          → single <table>
-        """
-        import html as _html
-
-        def _esc(s: str) -> str:
-            return _html.escape(s)
-
-        if not self.text_coords:
-            return "<html><body><p>No text found.</p></body></html>"
-
-        xs_all = sorted(t[1] for t in self.text_coords)
-        if len(xs_all) < 2:
-            return "<html><body><p>No text found.</p></body></html>"
-        big_gap_idx = max(range(len(xs_all)-1), key=lambda i: xs_all[i+1]-xs_all[i])
-        x_cutoff   = xs_all[big_gap_idx]
-        main = [(t, x, y) for t, x, y in self.text_coords if x <= x_cutoff]
-        if not main:
-            return "<html><body><p>No text found.</p></body></html>"
-
-        dividers = self._find_vertical_dividers(min_span=400.0)
-        x_min = min(x for _, x, _ in main)
-        x_max = max(x for _, x, _ in main)
-        main_div = sorted(d for d in dividers if x_min - 5 < d < x_max + 5)
-        if main_div:
-            boundaries = [x_min - 1.0] + main_div + [x_max + 1.0]
-        else:
-            all_xs = sorted(set(round(x, 1) for _, x, _ in main))
-            x_span = x_max - x_min
-            col_b = [(all_xs[i]+all_xs[i+1])/2 for i in range(len(all_xs)-1)
-                     if all_xs[i+1]-all_xs[i] > x_span*0.04]
-            boundaries = [x_min - 1.0] + col_b + [x_max + 1.0]
-
-        Y_TOL = 4.0
-
-        def _group_rows(items: list[tuple[str, float, float]]
-                        ) -> list[list[tuple[str, float, float]]]:
-            rows: list[list[tuple[str, float, float]]] = []
-            cur: list[tuple[str, float, float]] = []
-            cur_y: float | None = None
-            for item in sorted(items, key=lambda t: (-t[2], t[1])):
-                if cur_y is None or abs(item[2] - cur_y) <= Y_TOL:
-                    cur.append(item); cur_y = cur_y or item[2]
-                else:
-                    if cur: rows.append(sorted(cur, key=lambda t: t[1]))
-                    cur = [item]; cur_y = item[2]
-            if cur: rows.append(sorted(cur, key=lambda t: t[1]))
-            return rows
-
-        CLUSTER_R = 2.0; MIN_CLUSTER_N = 15; MIN_GAP = 12.0
-
-        def _split_sub(col: list[tuple[str, float, float]]
-                       ) -> list[list[tuple[str, float, float]]]:
-            if not col: return []
-            col_x_min = min(x for _, x, _ in col); col_x_max = max(x for _, x, _ in col)
-            if col_x_max - col_x_min < 30: return [col]
-            xs_s = sorted(x for _, x, _ in col)
-            starts: list[float] = []; visited: set[int] = set()
-            for i, x in enumerate(xs_s):
-                if i in visited: continue
-                cl = [j for j, xj in enumerate(xs_s) if abs(xj-x) <= CLUSTER_R]
-                if len(cl) >= MIN_CLUSTER_N:
-                    cx_lo = min(xs_s[j] for j in cl)
-                    prev_x = next((xs_s[j] for j in reversed(range(len(xs_s)))
-                                   if xs_s[j] < cx_lo - 0.1), None)
-                    n_bef = sum(1 for _, xj, _ in col if xj < cx_lo - 0.1)
-                    if (prev_x is None or cx_lo-prev_x >= MIN_GAP) and n_bef >= MIN_CLUSTER_N:
-                        starts.append(cx_lo)
-                    visited.update(cl)
-            if not starts: return [col]
-            splits = [(max(xj for _, xj, _ in col if xj < s-0.1)+s)/2
-                      for s in sorted(starts)
-                      if any(xj < s-0.1 for _, xj, _ in col)]
-            if not splits: return [col]
-            bds = [col_x_min-1.0]+sorted(splits)+[col_x_max+1.0]
-            res = [[(t,x,y) for t,x,y in col if bds[i]<x<=bds[i+1]]
-                   for i in range(len(bds)-1)]
-            res = [r for r in res if r]
-            return res if len(res) > 1 else [col]
-
-        _SECT = re.compile(
-            r'^(\d+[\.．]\s*.{1,25}|[一-龥ぁ-んァ-ン]{2,15}'
-            r'(概要|仕様|工事|方針|区分|写真|書等|金額)?)\s*$')
-
-        def _col_to_html(items: list[tuple[str, float, float]]) -> str:
-            parts: list[str] = []
-            for row in _group_rows(items):
-                txts = [t[0].strip() for t in row if t[0].strip()]
-                if not txts: continue
-                joined = "　".join(txts)
-                if _SECT.match(joined) and len(joined) <= 25:
-                    parts.append(f'<h4>{_esc(joined)}</h4>')
-                else:
-                    for txt in txts:
-                        parts.append(f'<p>{_esc(txt)}</p>')
-            return "\n".join(parts)
-
-        # ── Detect 工事区分表 tables from circles ────────────────────────────────
-        circles = self._parse_circles()
-        kk_html = ""
-        if circles:
-            # Cluster circle X positions (each table section has its own X cluster)
-            all_cxs = sorted(cx for cx, _, _ in circles)
-            # Find big gaps to split into table groups
-            cx_gap_threshold = 50.0
-            cx_groups: list[list[float]] = []
-            cur_g: list[float] = [all_cxs[0]]
-            for cx in all_cxs[1:]:
-                if cx - cur_g[-1] > cx_gap_threshold:
-                    cx_groups.append(cur_g); cur_g = []
-                cur_g.append(cx)
-            if cur_g: cx_groups.append(cur_g)
-
-            # For each group, find col headers and row labels
-            _SECT_RE = re.compile(r'^[ぁ-んァ-ン一-龥]{2,}(系|関係|設備|工事)?$')
-            all_tables_html = ""
-
-            for group in cx_groups:
-                gx_min, gx_max = min(group), max(group)
-                # Find col headers: texts near each unique cluster X, at Y above circles
-                g_ys = [cy for cx, cy, _ in circles if gx_min - 5 <= cx <= gx_max + 5]
-                if not g_ys: continue
-                cy_max_g = max(g_ys)
-
-                # Unique column X positions from this group (cluster within ±5)
-                unique_col_xs: list[float] = []
-                seen_cx: list[float] = []
-                for cx in sorted(set(round(cx, 0) for cx in group)):
-                    if not seen_cx or cx - seen_cx[-1] > 5:
-                        seen_cx.append(cx)
-                        unique_col_xs.append(cx)
-
-                col_headers: list[tuple[str, float]] = []
-                for cx in unique_col_xs:
-                    cands = [(t, tx, ty) for t, tx, ty in self.text_coords
-                             if abs(tx - cx) < 10 and ty >= cy_max_g - 5]
-                    if cands:
-                        best = min(cands, key=lambda c: abs(c[1]-cx))
-                        col_headers.append((best[0].strip(), cx))
-
-                # Row labels: texts to the LEFT of this group, near each circle Y
-                row_x_lo = gx_min - 200; row_x_hi = gx_min - 5
-                g_circle_ys = sorted(set(round(cy, 0)
-                                         for cx, cy, _ in circles
-                                         if gx_min - 5 <= cx <= gx_max + 5),
-                                     reverse=True)
-                row_labels: list[tuple[str, float]] = []
-                seen_rows: set[str] = set()
-                for cy in g_circle_ys:
-                    cands = [(t, tx, ty) for t, tx, ty in self.text_coords
-                             if row_x_lo < tx < row_x_hi and abs(ty - cy) < 6]
-                    if cands:
-                        best = min(cands, key=lambda c: abs(c[2] - cy))
-                        key = best[0].strip()
-                        if key not in seen_rows:
-                            seen_rows.add(key); row_labels.append((key, cy))
-
-                # Build circle_set for this group
-                circle_set: set[tuple[str, str]] = set()
-                for cx, cy, _ in circles:
-                    if not (gx_min - 5 <= cx <= gx_max + 5): continue
-                    if not col_headers or not row_labels: continue
-                    col_h = min(col_headers, key=lambda c: abs(c[1]-cx))
-                    row_l = min(row_labels, key=lambda r: abs(r[1]-cy))
-                    if abs(col_h[1]-cx) < 15 and abs(row_l[1]-cy) < 6:
-                        circle_set.add((row_l[0], col_h[0]))
-
-                if not col_headers or not row_labels: continue
-
-                # Find table section title: text near the top of this table,
-                # between the column header row and the first data row
-                cy_max_g = max(g_ys)
-                _TITLE_RE = re.compile(r'(関係|設備|工事|仕様書|概要)')
-                tbl_title_cands = [(t, tx, ty) for t, tx, ty in self.text_coords
-                                   if row_x_lo - 50 < tx < gx_max + 80
-                                   and (cy_max_g + 0.5) < ty < (cy_max_g + 15)
-                                   and _TITLE_RE.search(t)]
-                rl_cx = (row_x_lo + row_x_hi) / 2
-                if tbl_title_cands:
-                    # Pick closest to the row-label X center (avoid cross-table text)
-                    tbl_title = min(tbl_title_cands,
-                                    key=lambda c: abs(c[1] - rl_cx))[0].strip()
-                else:
-                    fb = [(t, tx, ty) for t, tx, ty in self.text_coords
-                          if row_x_lo - 50 < tx < gx_max + 80
-                          and cy_max_g < ty < cy_max_g + 20]
-                    tbl_title = (min(fb, key=lambda c: abs(c[1]-rl_cx))[0].strip()
-                                 if fb else "工事区分表")
-
-                thead_cols = "".join(f'<th>{_esc(h)}</th>' for h, _ in col_headers)
-                rows_html = ""
-                for row_lbl, _ in row_labels:
-                    is_sect = _SECT_RE.match(row_lbl) and len(row_lbl) <= 12
-                    n_c = len(col_headers)
-                    if is_sect:
-                        rows_html += (f'<tr class="section-row">'
-                                      f'<td colspan="{n_c+1}"><strong>{_esc(row_lbl)}</strong></td>'
-                                      f'</tr>\n')
-                    else:
-                        cells = "".join(
-                            '<td class="mark">○</td>' if (row_lbl, h) in circle_set
-                            else '<td></td>'
-                            for h, _ in col_headers
-                        )
-                        rows_html += f'<tr><td class="row-label">{_esc(row_lbl)}</td>{cells}</tr>\n'
-
-                all_tables_html += f"""
-<div class="kk-sub">
-  <div class="kk-sub-title">{_esc(tbl_title[:40])}</div>
-  <table class="kk-table">
-    <thead><tr><th>項目</th>{thead_cols}</tr></thead>
-    <tbody>{rows_html}</tbody>
-  </table>
-</div>"""
-
-            if all_tables_html:
-                kk_html = f"""
-<div class="kk-section">
-  <div class="kk-title">工事区分表（該当箇所を〇する）</div>
-  <div class="kk-tables">
-{all_tables_html}
-  </div>
-</div>"""
-
-        # ── Narrative columns (left of circle area) ───────────────────────────────
-        circle_x_lo = min(cx for cx, _, _ in circles) if circles else x_max
-        narrative_main = [(t, x, y) for t, x, y in main if x < circle_x_lo - 20]
-
-        subcols_html: list[tuple[str, str]] = []
-        for i in range(len(boundaries)-1):
-            lo, hi = boundaries[i], boundaries[i+1]
-            if lo >= circle_x_lo - 20: continue  # skip columns that are in table area
-            col = [(t, x, y) for t, x, y in narrative_main if lo < x <= hi]
-            if not col: continue
-            for sub in _split_sub(col):
-                if not sub: continue
-                sub_texts = sorted(sub, key=lambda t: -t[2])
-                header = next((t[0].strip() for t in sub_texts
-                               if len(t[0].strip()) > 2), f"列{i+1}")
-                body = _col_to_html(sub)
-                subcols_html.append((header[:30], body))
-
-        # Give wider flex to spec text columns (more content)
-        n_narr = max(len(subcols_html), 1)
-        narr_pct = round(60 / n_narr, 1)  # narrative takes 60% total width
-
-        tb_items = "".join(f"<li>{_esc(t)}</li>" for t in title_block["texts"])
-        scales   = " / ".join(title_block["scales"])
-        tb_html  = (f'<div class="title-block"><ul>{tb_items}</ul>'
-                    + (f'<p class="scale">縮尺: {_esc(scales)}</p>' if scales else "")
-                    + '</div>') if (title_block["texts"] or title_block["scales"]) else ""
-
-        cols_html = ""
-        for header, body in subcols_html:
-            cols_html += f"""
-<div class="col" style="flex: 0 0 {narr_pct}%;">
-  <div class="col-header">{_esc(header)}</div>
-  <div class="col-body">{body}</div>
-</div>"""
-
-        return f"""<!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="utf-8">
-<title>{_esc(self.path.stem)}</title>
-<style>
-  * {{ box-sizing: border-box; }}
-  body {{ font-family: "Helvetica Neue", Arial, "Hiragino Kaku Gothic Pro", Meiryo, sans-serif;
-         font-size: 12px; margin: 16px; color: #222; background: #fafafa; line-height: 1.5; }}
-  h1   {{ font-size: 16px; border-bottom: 2px solid #555; padding-bottom: 6px; margin-bottom: 12px; }}
-  .title-block {{ background: #f0f4f8; padding: 8px 14px; border-radius: 6px;
-                  margin-bottom: 14px; font-size: 11px; }}
-  .title-block ul {{ margin: 0; padding-left: 18px; }}
-  .title-block .scale {{ font-weight: bold; margin: 4px 0 0; }}
-
-  /* ── Narrative columns ── */
-  .layout {{ display: flex; gap: 12px; align-items: flex-start; }}
-  .narrative {{ display: flex; gap: 0; flex: 0 0 60%; border: 1px solid #999;
-                border-radius: 4px; overflow: hidden; }}
-  .col {{ display: flex; flex-direction: column; border-right: 1px solid #aaa; }}
-  .col:last-child {{ border-right: none; }}
-  .col-header {{ background: #d6e4f0; font-weight: bold; font-size: 11px;
-                 padding: 5px 8px; border-bottom: 1px solid #aaa;
-                 text-align: center; position: sticky; top: 0; z-index: 2; }}
-  .col-body {{ padding: 6px 8px; overflow-y: auto; max-height: 85vh; }}
-  .col-body h4 {{ font-size: 11px; margin: 8px 0 2px; color: #1a4f8a;
-                  border-bottom: 1px solid #c8d8e8; padding-bottom: 2px; }}
-  .col-body p  {{ margin: 2px 0; line-height: 1.4; word-break: break-all; }}
-
-  /* ── 工事区分表 table ── */
-  .kk-section {{ flex: 1; overflow-x: auto; min-width: 0; }}
-  .kk-title {{ background: #2c5f8a; color: #fff; font-weight: bold; font-size: 13px;
-               padding: 6px 12px; border-radius: 4px 4px 0 0; text-align: center; }}
-  .kk-tables {{ display: flex; gap: 8px; padding: 8px; background: #f0f4f8;
-                border: 1px solid #aac; border-top: none; border-radius: 0 0 4px 4px;
-                flex-wrap: wrap; }}
-  .kk-sub {{ flex: 1; min-width: 0; }}
-  .kk-sub-title {{ background: #4a8ab0; color: #fff; font-size: 11px; font-weight: bold;
-                   padding: 4px 8px; text-align: center; border-radius: 3px 3px 0 0; }}
-  .kk-table {{ border-collapse: collapse; width: 100%; font-size: 11px;
-               border: 1px solid #888; background: #fff; }}
-  .kk-table th {{ background: #d0e4f4; border: 1px solid #888; padding: 4px 5px;
-                  text-align: center; white-space: nowrap; }}
-  .kk-table td {{ border: 1px solid #ccc; padding: 3px 5px; }}
-  .kk-table td.row-label {{ background: #f5f7fa; font-size: 10px;
-                             white-space: nowrap; max-width: 280px;
-                             overflow: hidden; text-overflow: ellipsis; }}
-  .kk-table td.mark {{ text-align: center; color: #c02010; font-size: 15px;
-                       font-weight: bold; background: #fff8f6; padding: 1px 4px; }}
-  .kk-table tr.section-row td {{ background: #daeaf8; font-weight: bold;
-                                  font-size: 11px; padding: 4px 8px; }}
-  .kk-table tbody tr:hover {{ background: #e8f4ff; }}
-</style>
-</head>
-<body>
-<h1>{_esc(self.path.stem)}</h1>
-{tb_html}
-<div class="layout">
-  <div class="narrative">
-{cols_html}
-  </div>
-{kk_html}
-</div>
-</body>
-</html>"""
+        items.sort(key=lambda it: it[0])
+        return [(lbl, val) for _, lbl, val in items]
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
@@ -1341,8 +956,6 @@ def main() -> None:
     p.add_argument("dxf_file", help="Path to .dxf file")
     p.add_argument("--md", nargs="?", const="", metavar="OUTPUT.md",
                    help="Export Markdown report (default: same name as DXF)")
-    p.add_argument("--html", nargs="?", const="", metavar="OUTPUT.html",
-                   help="Export HTML report with multi-column layout")
     args = p.parse_args()
 
     path = Path(args.dxf_file)
@@ -1362,11 +975,6 @@ def main() -> None:
         md_path = Path(args.md) if args.md else None
         out = parser.export_markdown(md_path)
         print(f"\n📄 Markdown saved: {out}")
-
-    if args.html is not None:
-        html_path = Path(args.html) if args.html else None
-        out = parser.export_html(html_path)
-        print(f"\n🌐 HTML saved: {out}")
 
     print("\n✨ Analysis complete!")
 

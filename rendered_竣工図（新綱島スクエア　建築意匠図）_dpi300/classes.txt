@@ -1,5 +1,0 @@
-text
-table
-title_block
-diagram
-deleted_part
