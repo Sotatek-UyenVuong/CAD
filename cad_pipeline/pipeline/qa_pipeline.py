@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 from pathlib import Path
 from collections.abc import Callable
@@ -30,7 +31,7 @@ def run_qa(
     user_email: str | None = None,
     save_history: bool = True,
     image_bytes: bytes | None = None,
-    progress_callback: Callable[[str], None] | None = None,
+    progress_callback: Callable[[dict], None] | None = None,
     answer_stream_callback: Callable[[str], None] | None = None,
 ) -> dict:
     """Run the full Q&A pipeline for a given query.
@@ -55,9 +56,20 @@ def run_qa(
           "query_type": "qa",
         }
     """
+    def _emit_event(event: dict) -> None:
+        if progress_callback is None:
+            return
+        payload = {
+            "phase": str(event.get("phase", "step")),
+            "message": str(event.get("message", "")),
+            "step_id": str(event.get("step_id", "")),
+            "tool": str(event.get("tool", "")),
+            "status": str(event.get("status", "")),
+        }
+        progress_callback(payload)
+
     def _emit(step: str) -> None:
-        if progress_callback is not None:
-            progress_callback(step)
+        _emit_event({"phase": "step", "message": step, "status": "running"})
 
     def _trim(value: str | None, limit: int = 240) -> str:
         if not value:
@@ -84,6 +96,31 @@ def run_qa(
         except Exception:
             pass
 
+    def _sanitize_ui_updates(raw: object) -> list[dict]:
+        if not isinstance(raw, list):
+            return []
+        updates: list[dict] = []
+        for item in raw[:6]:
+            if not isinstance(item, dict):
+                continue
+            message = str(item.get("message", "")).strip()
+            if not message:
+                continue
+            updates.append(
+                {
+                    "phase": str(item.get("phase", "step_started")).strip() or "step_started",
+                    "message": message,
+                    "step_id": str(item.get("step_id", "")).strip(),
+                    "tool": str(item.get("tool", "")).strip(),
+                    "status": str(item.get("status", "running")).strip() or "running",
+                }
+            )
+        return updates
+
+    def _emit_ui_updates(raw: object) -> None:
+        for upd in _sanitize_ui_updates(raw):
+            _emit_event(upd)
+
     lang = detect_query_language(query)
 
     def _msg(vi: str, ja: str, en: str) -> str:
@@ -95,6 +132,176 @@ def run_qa(
             lines.append(f"User: {t.get('role_user', '')}")
             lines.append(f"Assistant: {t.get('role_assistant', '')}")
         return "\n".join(lines)
+
+    def _norm_text(value: object) -> str:
+        text = str(value or "").strip().lower()
+        if not text:
+            return ""
+        return re.sub(r"\s+", " ", text)
+
+    def _extract_title_block_from_image(query_text: str, img_bytes: bytes) -> dict[str, str]:
+        try:
+            import cv2  # type: ignore[import-not-found]
+            import numpy as np
+            from google import genai  # type: ignore
+            from google.genai import types as _gt  # type: ignore
+            from cad_pipeline.config import GEMINI_API_KEY, GEMINI_FLASH_MODEL
+            from cad_pipeline.core.layout_detect import LayoutDetector
+
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            prompt = f"""Extract title-block metadata from this architectural drawing image.
+
+User query: "{query_text}"
+
+Return ONLY JSON:
+{{
+  "drawing_no": "<string or empty>",
+  "drawing_title": "<string or empty>",
+  "project": "<string or empty>"
+}}"""
+            def _extract_from_bytes(source_bytes: bytes) -> dict[str, str]:
+                resp = client.models.generate_content(
+                    model=GEMINI_FLASH_MODEL,
+                    contents=[
+                        _gt.Part.from_bytes(data=source_bytes, mime_type="image/png"),
+                        prompt,
+                    ],
+                )
+                raw = str(getattr(resp, "text", "") or "").strip()
+                raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+                parsed = json.loads(raw)
+                return {
+                    "drawing_no": str(parsed.get("drawing_no", "")).strip(),
+                    "drawing_title": str(parsed.get("drawing_title", "")).strip(),
+                    "project": str(parsed.get("project", "")).strip(),
+                }
+
+            # Prefer cropped title-block region from layout detector.
+            try:
+                arr = np.frombuffer(img_bytes, dtype=np.uint8)
+                image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if image is not None:
+                    detector = LayoutDetector.get()
+                    blocks = detector.predict_image(image)
+                    title_blocks = [b for b in blocks if b.label == "title_block" and b.width > 0 and b.height > 0]
+                    if title_blocks:
+                        best = max(title_blocks, key=lambda b: float(b.score) * max(1, b.width * b.height))
+                        crop = best.crop(image)
+                        ok, enc = cv2.imencode(".png", crop)
+                        if ok:
+                            return _extract_from_bytes(enc.tobytes())
+            except Exception:
+                pass
+
+            # Fallback to full image when no reliable title block crop exists.
+            return _extract_from_bytes(img_bytes)
+        except Exception:
+            return {"drawing_no": "", "drawing_title": "", "project": ""}
+
+    def _best_title_block_match(title_meta: dict[str, str], scoped_files: list[dict]) -> dict | None:
+        q_no = _norm_text(title_meta.get("drawing_no"))
+        q_title = _norm_text(title_meta.get("drawing_title"))
+        q_project = _norm_text(title_meta.get("project"))
+        if not (q_no or q_title or q_project):
+            return None
+
+        best: dict | None = None
+        best_score = 0.0
+        for fdoc in scoped_files:
+            rows = fdoc.get("title_block_index") or []
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                score = 0.0
+                no = _norm_text(row.get("drawing_no"))
+                title = _norm_text(row.get("drawing_title"))
+                project = _norm_text(row.get("project"))
+
+                if q_no and no:
+                    if q_no == no:
+                        score += 0.75
+                    elif q_no in no or no in q_no:
+                        score += 0.45
+                if q_title and title:
+                    if q_title == title:
+                        score += 0.5
+                    elif q_title in title or title in q_title:
+                        score += 0.3
+                if q_project and project:
+                    if q_project == project:
+                        score += 0.2
+                    elif q_project in project or project in q_project:
+                        score += 0.1
+
+                if score > best_score:
+                    best_score = score
+                    best = {
+                        "file_id": str(fdoc.get("_id", "")),
+                        "file_name": str(fdoc.get("file_name", "") or fdoc.get("_id", "")),
+                        "page_number": int(row.get("page_number") or 0),
+                        "score": score,
+                        "row": row,
+                    }
+        if best is None:
+            return None
+        if best_score < 0.45:
+            return None
+        return best
+
+    def _try_direct_non_doc_answer(query_text: str) -> dict[str, object] | None:
+        """Directly answer casual/off-topic chat without running document pipeline."""
+        if not query_text.strip():
+            return None
+        try:
+            from google import genai  # type: ignore
+            from cad_pipeline.config import GEMINI_API_KEY, GEMINI_FLASH_MODEL
+
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            prompt = f"""You are a chat assistant in a CAD-document Q&A app.
+
+Task:
+Decide whether the user query can be answered directly WITHOUT using any document/image/page context.
+
+Use direct answer only for:
+- greetings, casual small talk
+- general chit-chat
+- broad non-document questions unrelated to CAD files, pages, uploaded images, architectural plan analysis
+
+Do NOT use direct answer for:
+- questions that depend on project documents/pages/files/citations
+- uploaded image analysis
+- CAD/layout count/area/search/report tasks
+
+User query:
+"{query_text}"
+
+Reply ONLY JSON:
+{{
+  "is_direct": true | false,
+  "answer": "<direct helpful answer in user's language, empty if is_direct=false>",
+  "reason": "<short reason>"
+}}"""
+            resp = client.models.generate_content(
+                model=GEMINI_FLASH_MODEL,
+                contents=prompt,
+            )
+            raw = str(getattr(resp, "text", "") or "").strip()
+            raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            parsed = json.loads(raw)
+            is_direct = bool(parsed.get("is_direct", False))
+            if not is_direct:
+                return None
+            answer = str(parsed.get("answer", "")).strip()
+            if not answer:
+                return None
+            return {
+                "answer": answer,
+                "reason": _trim(str(parsed.get("reason", "")), 160) or "direct_non_doc",
+            }
+        except Exception:
+            return None
 
     def _history_debug(turns: list[dict], limit: int = 5) -> dict[str, object]:
         scoped = turns[-limit:]
@@ -228,68 +435,234 @@ def run_qa(
 
         return None
 
-    def _decide_image_grounding(query_text: str, turns: list[dict]) -> dict[str, str | bool]:
-        """Use LLM semantics to decide whether this turn should stay grounded on uploaded image."""
-        if not query_text.strip():
-            return {"use_uploaded_image": True, "confidence": "low", "reason": "empty_query"}
-
+    def _run_orchestrator_plan(
+        query_text: str,
+        turns: list[dict],
+        has_image: bool,
+        routed_tool_hint: str,
+    ) -> dict[str, object]:
+        """Plan execution with a single Pro-model orchestrator."""
+        tool_options = {"none", "search", "count", "area", "viz", "report_pdf", "report_excel"}
+        default_plan: dict[str, object] = {
+            "grounding_mode": "uploaded_image" if has_image else "page_context",
+            "preferred_tool": routed_tool_hint if routed_tool_hint in tool_options else "none",
+            "use_history_shortcut": not has_image,
+            "force_page_level": routed_tool_hint in {"count", "area", "viz", "search", "report_pdf", "report_excel"},
+            "allow_folder_direct_answer": routed_tool_hint == "none",
+            "allow_file_direct_answer": routed_tool_hint == "none",
+            "allow_image_early_answer": has_image,
+            "early_exit_confidence": "medium",
+            "reason": "default_fallback_plan",
+            "ui_updates": [],
+        }
         history_text = _history_context(turns, limit=6)
+
         try:
             from google import genai  # type: ignore
-            from cad_pipeline.config import GEMINI_API_KEY, GEMINI_FLASH_MODEL
+            from cad_pipeline.config import GEMINI_API_KEY, GEMINI_PRO_MODEL
 
             client = genai.Client(api_key=GEMINI_API_KEY)
-            prompt = f"""You are a routing judge in a CAD chat system.
+            prompt = f"""You are the Orchestrator Agent for a CAD assistant pipeline.
 
-Context:
-- The current turn has an uploaded image available from the user.
-- The assistant may answer from either:
-  A) the uploaded image context, OR
-  B) document/page/file context in the knowledge base.
+Your job is to decide a smooth execution plan with early-exit when enough evidence is available.
 
-Recent conversation:
+Available specialized tools/agents:
+- history_tool: reuse recent chat history for count/area/report shortcuts
+- folder_agent: choose relevant files or answer only very high-level overview
+- file_agent: decide direct summary answer vs candidate pages
+- page_agent: full page-level reasoning + downstream tool execution
+- image_tools: direct uploaded-image execution for count/area/general vision QA
+
+Inputs:
+- has_uploaded_image: {str(has_image).lower()}
+- tool_router_hint: "{routed_tool_hint}"
+- user_query: "{query_text}"
+- recent_conversation:
 ---
 {history_text}
 ---
 
-Current user query:
-"{query_text}"
-
-Decide whether this query should be grounded on the uploaded image.
-
-Decision rules:
-- Choose true if the user is asking about visual/layout details that are best answered from the uploaded image.
-- Choose false if the user intent is to return to document/page/file scope, citation scope, or broader document QA.
-- If ambiguous, prefer true only when image-grounded interpretation is more plausible from conversation continuity.
-
-Reply ONLY as JSON:
+Return ONLY JSON:
 {{
-  "use_uploaded_image": true | false,
-  "confidence": "high" | "medium" | "low",
-  "reason": "<short reason>"
-}}"""
+  "grounding_mode": "uploaded_image" | "page_context" | "hybrid",
+  "preferred_tool": "none" | "search" | "count" | "area" | "viz" | "report_pdf" | "report_excel",
+  "use_history_shortcut": true | false,
+  "force_page_level": true | false,
+  "allow_folder_direct_answer": true | false,
+  "allow_file_direct_answer": true | false,
+  "allow_image_early_answer": true | false,
+  "early_exit_confidence": "high" | "medium" | "low",
+  "reason": "<short rationale>",
+  "ui_updates": [
+    {{
+      "phase": "plan_created" | "step_started" | "tool_called" | "tool_result" | "replan" | "finalizing",
+      "message": "<natural short update in user's language, context-aware>",
+      "step_id": "<optional>",
+      "tool": "<optional>",
+      "status": "running" | "done" | "error"
+    }}
+  ]
+}}
+
+Rules:
+- Avoid rigid flow; allow early exit when confidence is sufficient.
+- If user intent is clearly about uploaded image details, grounding_mode should favor uploaded_image.
+- If user intent shifts back to document/page citations, grounding_mode should favor page_context.
+- If uncertain, choose hybrid.
+- Keep plan conservative: avoid hallucination and preserve citation quality.
+"""
             resp = client.models.generate_content(
-                model=GEMINI_FLASH_MODEL,
+                model=GEMINI_PRO_MODEL,
                 contents=prompt,
             )
             raw = str(getattr(resp, "text", "") or "").strip()
             raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
             parsed = json.loads(raw)
-            use_uploaded = bool(parsed.get("use_uploaded_image", True))
-            confidence = str(parsed.get("confidence", "low")).lower()
-            if confidence not in {"high", "medium", "low"}:
-                confidence = "low"
-            reason = _trim(str(parsed.get("reason", "")), 180) or "model_decision"
+            plan = dict(default_plan)
+
+            grounding = str(parsed.get("grounding_mode", plan["grounding_mode"])).lower()
+            if grounding not in {"uploaded_image", "page_context", "hybrid"}:
+                grounding = str(plan["grounding_mode"])
+            preferred_tool = str(parsed.get("preferred_tool", plan["preferred_tool"])).lower()
+            if preferred_tool not in tool_options:
+                preferred_tool = str(plan["preferred_tool"])
+            early_conf = str(parsed.get("early_exit_confidence", "medium")).lower()
+            if early_conf not in {"high", "medium", "low"}:
+                early_conf = "medium"
+
+            plan.update(
+                {
+                    "grounding_mode": grounding,
+                    "preferred_tool": preferred_tool,
+                    "use_history_shortcut": bool(parsed.get("use_history_shortcut", plan["use_history_shortcut"])),
+                    "force_page_level": bool(parsed.get("force_page_level", plan["force_page_level"])),
+                    "allow_folder_direct_answer": bool(parsed.get("allow_folder_direct_answer", plan["allow_folder_direct_answer"])),
+                    "allow_file_direct_answer": bool(parsed.get("allow_file_direct_answer", plan["allow_file_direct_answer"])),
+                    "allow_image_early_answer": bool(parsed.get("allow_image_early_answer", plan["allow_image_early_answer"])),
+                    "early_exit_confidence": early_conf,
+                    "reason": _trim(str(parsed.get("reason", "")), 180) or "model_plan",
+                    "ui_updates": _sanitize_ui_updates(parsed.get("ui_updates")),
+                }
+            )
+            return plan
+        except Exception as exc:
+            default_plan["reason"] = f"fallback_on_error:{_trim(str(exc), 80)}"
+            return default_plan
+
+    def _orchestrator_replan_after_step(
+        query_text: str,
+        plan: dict[str, object],
+        step_name: str,
+        provisional_answer: str,
+        tool_result: dict | None = None,
+        pages_used_count: int = 0,
+        citations_count: int = 0,
+    ) -> dict[str, object]:
+        """Ask orchestrator whether to finalize now or continue."""
+        allowed_steps = {
+            "history_shortcut",
+            "image_count",
+            "image_area",
+            "image_general_qa",
+            "folder_agent",
+            "file_agent",
+            "page_agent",
+            "finalize",
+        }
+        answer = provisional_answer.strip()
+        if not answer:
             return {
-                "use_uploaded_image": use_uploaded,
-                "confidence": confidence,
+                "finalize_now": False,
+                "next_step": "continue_page_level",
+                "next_tool_sequence": ["page_agent"],
+                "reason": "empty_answer",
+                "ui_updates": [],
+            }
+
+        confidence_hint = str((tool_result or {}).get("confidence", "")).lower() if tool_result else ""
+        early_exit_target = str(plan.get("early_exit_confidence", "medium")).lower()
+        default_finalize = True
+        if confidence_hint == "low":
+            default_finalize = False
+        if early_exit_target == "high" and confidence_hint not in {"high"} and citations_count == 0 and step_name.startswith("image_first"):
+            default_finalize = False
+        default_sequence = ["page_agent"] if not default_finalize else ["finalize"]
+
+        try:
+            from google import genai  # type: ignore
+            from cad_pipeline.config import GEMINI_API_KEY, GEMINI_PRO_MODEL
+
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            prompt = f"""You are the Orchestrator Agent deciding whether to stop early.
+
+User query: "{query_text}"
+Current step: "{step_name}"
+Current plan (JSON): {json.dumps(plan, ensure_ascii=False)}
+Provisional answer:
+---
+{answer[:1600]}
+---
+Tool result summary (JSON): {json.dumps(tool_result or {}, ensure_ascii=False)[:1600]}
+Evidence stats: pages_used={pages_used_count}, citations={citations_count}, confidence_hint="{confidence_hint or "unknown"}"
+
+Decide if we should finalize now or continue pipeline for better grounding.
+If continuing, provide explicit next_tool_sequence from allowed steps.
+
+Return ONLY JSON:
+{{
+  "finalize_now": true | false,
+  "next_step": "finalize" | "continue_page_level",
+  "next_tool_sequence": ["history_shortcut" | "image_count" | "image_area" | "image_general_qa" | "folder_agent" | "file_agent" | "page_agent" | "finalize", ...],
+  "reason": "<short reason>",
+  "ui_updates": [
+    {{
+      "phase": "replan" | "step_started" | "tool_called" | "tool_result" | "finalizing",
+      "message": "<natural short update in user's language, context-aware>",
+      "step_id": "<optional>",
+      "tool": "<optional>",
+      "status": "running" | "done" | "error"
+    }}
+  ]
+}}"""
+            resp = client.models.generate_content(model=GEMINI_PRO_MODEL, contents=prompt)
+            raw = str(getattr(resp, "text", "") or "").strip()
+            raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            parsed = json.loads(raw)
+            finalize_now = bool(parsed.get("finalize_now", default_finalize))
+            next_step = str(parsed.get("next_step", "finalize" if finalize_now else "continue_page_level")).lower()
+            if next_step not in {"finalize", "continue_page_level"}:
+                next_step = "finalize" if finalize_now else "continue_page_level"
+            sequence_raw = parsed.get("next_tool_sequence", default_sequence)
+            if not isinstance(sequence_raw, list):
+                sequence_raw = default_sequence
+            sequence = []
+            for item in sequence_raw:
+                step = str(item).strip().lower()
+                if step in allowed_steps and step not in sequence:
+                    sequence.append(step)
+            if not sequence:
+                sequence = list(default_sequence)
+            if next_step == "continue_page_level":
+                finalize_now = False
+                if "page_agent" not in sequence:
+                    sequence.append("page_agent")
+            else:
+                sequence = ["finalize"]
+            reason = _trim(str(parsed.get("reason", "")), 180) or "model_replan"
+            return {
+                "finalize_now": finalize_now,
+                "next_step": next_step,
+                "next_tool_sequence": sequence,
                 "reason": reason,
+                "ui_updates": _sanitize_ui_updates(parsed.get("ui_updates")),
             }
         except Exception as exc:
             return {
-                "use_uploaded_image": True,
-                "confidence": "low",
+                "finalize_now": default_finalize,
+                "next_step": "finalize" if default_finalize else "continue_page_level",
+                "next_tool_sequence": list(default_sequence),
                 "reason": f"fallback_on_error:{_trim(str(exc), 80)}",
+                "ui_updates": [],
             }
 
     with traced_span(
@@ -303,6 +676,36 @@ Reply ONLY as JSON:
         session_file_count=len(session_file_ids or []),
     ) as root_span:
         _add_event(root_span, "qa.request.received", {"query": _trim(query, 300), "folder_id": folder_id})
+        if not image_bytes:
+            _emit("Direct-chat route check")
+            with traced_span("qa.direct_chat_check", query=_trim(query, 220)) as direct_span:
+                direct = _try_direct_non_doc_answer(query)
+                if direct is not None:
+                    answer = str(direct.get("answer", "")).strip()
+                    _set_attr(direct_span, "routed_direct", True)
+                    _set_attr(direct_span, "reason", str(direct.get("reason", "")))
+                    _set_attr(direct_span, "answer_preview", _trim(answer, 220))
+                    _emit_event(
+                        {
+                            "phase": "finalizing",
+                            "message": answer[:160],
+                            "status": "done",
+                            "step_id": "direct_chat",
+                            "tool": "direct_chat",
+                        }
+                    )
+                    if save_history and answer:
+                        mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
+                    return {
+                        "answer": answer,
+                        "pages_used": [],
+                        "citations": [],
+                        "images": [],
+                        "tool_result": {"mode": "direct_non_doc"},
+                        "source_file": "general_chat",
+                        "query_type": "qa",
+                    }
+                _set_attr(direct_span, "routed_direct", False)
         _emit("Load chat history")
         with traced_span("qa.load_chat_history", folder_id=folder_id, user_email=user_email or "") as history_span:
             chat_history = mongo.get_chat_history(folder_id, user_email=user_email)
@@ -316,34 +719,104 @@ Reply ONLY as JSON:
             _set_attr(root_span, "chat_history_turns", len(chat_history))
             _add_event(history_span, "qa.chat_history.loaded", _history_debug(chat_history))
 
-        effective_image_bytes = image_bytes
-        if image_bytes:
-            with traced_span("qa.image_scope_decision", query=_trim(query, 220)) as image_scope_span:
-                image_scope = _decide_image_grounding(query, chat_history)
-                use_uploaded_image = bool(image_scope.get("use_uploaded_image", True))
-                if not use_uploaded_image:
-                    effective_image_bytes = None
-                _set_attr(image_scope_span, "use_uploaded_image", use_uploaded_image)
-                _set_attr(image_scope_span, "confidence", str(image_scope.get("confidence", "")))
-                _set_attr(image_scope_span, "reason", str(image_scope.get("reason", "")))
-                _set_attr(root_span, "use_uploaded_image", use_uploaded_image)
+        routed_tool_hint = classify_tool(query=query, image_bytes=image_bytes).get("tool", "none")
+        if image_bytes and routed_tool_hint in {"none", "search"}:
+            _emit("Title-block lookup on uploaded image")
+            with traced_span("qa.title_block_lookup", query=_trim(query, 220)) as tb_span:
+                if session_file_ids is not None:
+                    scoped_files_for_title = mongo.get_files_by_ids(session_file_ids)
+                else:
+                    scoped_files_for_title = mongo.list_files(folder_id)
+                title_meta = _extract_title_block_from_image(query, image_bytes)
+                match = _best_title_block_match(title_meta, scoped_files_for_title)
+                _set_attr(tb_span, "meta_drawing_no", _trim(title_meta.get("drawing_no", ""), 120))
+                _set_attr(tb_span, "meta_drawing_title", _trim(title_meta.get("drawing_title", ""), 140))
+                _set_attr(tb_span, "scope_file_count", len(scoped_files_for_title))
+                if match is not None:
+                    _set_attr(tb_span, "matched_file_id", str(match.get("file_id", "")))
+                    _set_attr(tb_span, "matched_file_name", str(match.get("file_name", "")))
+                    _set_attr(tb_span, "matched_page", int(match.get("page_number", 0)))
+                    _set_attr(tb_span, "matched_score", float(match.get("score", 0.0)))
+                    answer = _msg(
+                        f"Ảnh bạn gửi khớp với **{match['file_name']}** (trang {match['page_number']}) dựa trên thông tin title block.",
+                        f"アップロード画像は title block 情報に基づき **{match['file_name']}**（{match['page_number']}ページ）に一致しました。",
+                        f"Your uploaded image matches **{match['file_name']}** (page {match['page_number']}) based on title-block metadata.",
+                    )
+                    if save_history:
+                        mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
+                    return {
+                        "answer": answer,
+                        "pages_used": [int(match["page_number"])],
+                        "citations": [
+                            {
+                                "file_id": str(match["file_id"]),
+                                "file_name": str(match["file_name"]),
+                                "page_number": int(match["page_number"]),
+                            }
+                        ],
+                        "images": [],
+                        "tool_result": {
+                            "mode": "title_block_lookup",
+                            "match_score": float(match["score"]),
+                            "query_title_block": title_meta,
+                            "matched_title_block": match.get("row", {}),
+                        },
+                        "source_file": str(match["file_name"]),
+                        "query_type": "qa",
+                    }
                 _add_event(
-                    image_scope_span,
-                    "qa.image_scope.selected",
-                    {
-                        "use_uploaded_image": use_uploaded_image,
-                        "confidence": str(image_scope.get("confidence", "")),
-                        "reason": str(image_scope.get("reason", "")),
-                    },
+                    tb_span,
+                    "qa.title_block_lookup.miss",
+                    {"reason": "no_confident_match"},
                 )
+        with traced_span("qa.orchestrator.plan", query=_trim(query, 220)) as plan_span:
+            plan = _run_orchestrator_plan(
+                query_text=query,
+                turns=chat_history,
+                has_image=bool(image_bytes),
+                routed_tool_hint=routed_tool_hint,
+            )
+            _set_attr(plan_span, "grounding_mode", str(plan.get("grounding_mode", "")))
+            _set_attr(plan_span, "preferred_tool", str(plan.get("preferred_tool", "")))
+            _set_attr(plan_span, "use_history_shortcut", bool(plan.get("use_history_shortcut", False)))
+            _set_attr(plan_span, "force_page_level", bool(plan.get("force_page_level", False)))
+            _set_attr(plan_span, "allow_image_early_answer", bool(plan.get("allow_image_early_answer", False)))
+            _set_attr(plan_span, "reason", str(plan.get("reason", "")))
+            _add_event(plan_span, "qa.orchestrator.plan_ready", {k: str(v) for k, v in plan.items()})
+            _emit_ui_updates(plan.get("ui_updates"))
+
+        use_uploaded_image = bool(image_bytes) and str(plan.get("grounding_mode", "page_context")) in {"uploaded_image", "hybrid"}
+        effective_image_bytes = image_bytes if use_uploaded_image else None
+        _set_attr(root_span, "use_uploaded_image", use_uploaded_image)
+        _set_attr(root_span, "orchestrator_grounding_mode", str(plan.get("grounding_mode", "")))
+
+        flow_overrides: dict[str, object] = {}
+
+        def _apply_replan_directive(replan: dict[str, object]) -> None:
+            sequence = replan.get("next_tool_sequence")
+            if not isinstance(sequence, list):
+                return
+            seq = [str(s).strip().lower() for s in sequence]
+            if "page_agent" in seq:
+                flow_overrides["force_page_level"] = True
+                flow_overrides["allow_folder_direct_answer"] = False
+                flow_overrides["allow_file_direct_answer"] = False
+            elif "file_agent" in seq:
+                flow_overrides["allow_folder_direct_answer"] = False
+            elif "folder_agent" in seq:
+                flow_overrides["allow_folder_direct_answer"] = True
+                flow_overrides["allow_file_direct_answer"] = True
 
         _emit("Detect query tool intent")
+        force_continue_page_level = False
         with traced_span("qa.detect_tool_intent", query=_trim(query, 240)) as tool_span:
-            routed_tool = classify_tool(query=query, image_bytes=effective_image_bytes).get("tool", "none")
+            routed_tool = str(plan.get("preferred_tool") or "none")
+            if routed_tool not in {"none", "search", "count", "area", "viz", "report_pdf", "report_excel"}:
+                routed_tool = classify_tool(query=query, image_bytes=effective_image_bytes).get("tool", "none")
             _set_attr(tool_span, "routed_tool", routed_tool)
-            # Do not use history shortcut when user provided an image.
-            # Image queries must be grounded on the uploaded image input.
-            if (not effective_image_bytes) and routed_tool in {"count", "area", "report_pdf", "report_excel"}:
+            _set_attr(tool_span, "routed_tool_hint", routed_tool_hint)
+            allow_history_shortcut = bool(plan.get("use_history_shortcut", False)) and (not effective_image_bytes)
+            if allow_history_shortcut and routed_tool in {"count", "area", "report_pdf", "report_excel"}:
                 _add_event(
                     tool_span,
                     "qa.tool_shortcut.history_attempt",
@@ -360,9 +833,27 @@ Reply ONLY as JSON:
                         "qa.tool_shortcut.history",
                         {"tool": routed_tool, "source": "chat_history"},
                     )
-                    if save_history and shortcut.get("answer"):
-                        mongo.append_chat_turn(folder_id, query, str(shortcut["answer"]), user_email=user_email)
-                    return shortcut
+                    replan = _orchestrator_replan_after_step(
+                        query_text=query,
+                        plan=plan,
+                        step_name="history_shortcut",
+                        provisional_answer=str(shortcut.get("answer", "")),
+                        tool_result=shortcut.get("tool_result"),
+                        pages_used_count=0,
+                        citations_count=0,
+                    )
+                    _add_event(
+                        tool_span,
+                        "qa.orchestrator.replan.history_shortcut",
+                        {k: str(v) for k, v in replan.items()},
+                    )
+                    _emit_ui_updates(replan.get("ui_updates"))
+                    if bool(replan.get("finalize_now", True)):
+                        if save_history and shortcut.get("answer"):
+                            mongo.append_chat_turn(folder_id, query, str(shortcut["answer"]), user_email=user_email)
+                        return shortcut
+                    _apply_replan_directive(replan)
+                    force_continue_page_level = True
                 _add_event(
                     tool_span,
                     "qa.tool_shortcut.history_miss",
@@ -371,10 +862,8 @@ Reply ONLY as JSON:
                         "reason": "insufficient_history_context",
                     },
                 )
-        # Image-first hard guard:
-        # For count/area queries with uploaded image, answer directly from the uploaded image.
-        # Do not run page-level reasoning to avoid mixing unrelated page context.
-        if effective_image_bytes and routed_tool == "count":
+        allow_image_early_answer = bool(plan.get("allow_image_early_answer", True))
+        if allow_image_early_answer and effective_image_bytes and routed_tool == "count":
             _emit("Run image-first count tool")
             with traced_span("qa.image_first.count", query=_trim(query, 220)) as image_count_span:
                 from cad_pipeline.tools.count_tool import run_count_tool
@@ -394,20 +883,32 @@ Reply ONLY as JSON:
                 _set_attr(image_count_span, "details_preview", _trim(details, 220))
 
                 answer = details.strip() or (str(count_value) if count_value is not None else "")
-
-                if save_history and answer:
-                    mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
-
-                return {
-                    "answer": answer,
-                    "pages_used": [],
-                    "citations": [],
-                    "images": [],
-                    "tool_result": tool_result,
-                    "source_file": "uploaded_image",
-                    "query_type": "qa",
-                }
-        if effective_image_bytes and routed_tool == "area":
+                replan = _orchestrator_replan_after_step(
+                    query_text=query,
+                    plan=plan,
+                    step_name="image_first_count",
+                    provisional_answer=answer,
+                    tool_result=tool_result,
+                    pages_used_count=0,
+                    citations_count=0,
+                )
+                _add_event(image_count_span, "qa.orchestrator.replan.image_first_count", {k: str(v) for k, v in replan.items()})
+                _emit_ui_updates(replan.get("ui_updates"))
+                if bool(replan.get("finalize_now", True)):
+                    if save_history and answer:
+                        mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
+                    return {
+                        "answer": answer,
+                        "pages_used": [],
+                        "citations": [],
+                        "images": [],
+                        "tool_result": tool_result,
+                        "source_file": "uploaded_image",
+                        "query_type": "qa",
+                    }
+                _apply_replan_directive(replan)
+                force_continue_page_level = True
+        if allow_image_early_answer and effective_image_bytes and routed_tool == "area":
             _emit("Run image-first area tool")
             with traced_span("qa.image_first.area", query=_trim(query, 220)) as image_area_span:
                 from cad_pipeline.tools.area_tool import run_area_tool
@@ -429,20 +930,32 @@ Reply ONLY as JSON:
                 _set_attr(image_area_span, "details_preview", _trim(details, 220))
 
                 answer = details.strip() or (str(area_value) if area_value not in (None, "", "unknown") else "")
-
-                if save_history and answer:
-                    mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
-
-                return {
-                    "answer": answer,
-                    "pages_used": [],
-                    "citations": [],
-                    "images": [],
-                    "tool_result": tool_result,
-                    "source_file": "uploaded_image",
-                    "query_type": "qa",
-                }
-        if effective_image_bytes and routed_tool == "none":
+                replan = _orchestrator_replan_after_step(
+                    query_text=query,
+                    plan=plan,
+                    step_name="image_first_area",
+                    provisional_answer=answer,
+                    tool_result=tool_result,
+                    pages_used_count=0,
+                    citations_count=0,
+                )
+                _add_event(image_area_span, "qa.orchestrator.replan.image_first_area", {k: str(v) for k, v in replan.items()})
+                _emit_ui_updates(replan.get("ui_updates"))
+                if bool(replan.get("finalize_now", True)):
+                    if save_history and answer:
+                        mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
+                    return {
+                        "answer": answer,
+                        "pages_used": [],
+                        "citations": [],
+                        "images": [],
+                        "tool_result": tool_result,
+                        "source_file": "uploaded_image",
+                        "query_type": "qa",
+                    }
+                _apply_replan_directive(replan)
+                force_continue_page_level = True
+        if allow_image_early_answer and effective_image_bytes and routed_tool == "none":
             _emit("Run image-first general vision QA")
             with traced_span("qa.image_first.general", query=_trim(query, 220)) as image_general_span:
                 try:
@@ -475,22 +988,40 @@ Reply ONLY as JSON:
                     tool_result = {"mode": "vision_pro_qa", "source": "uploaded_image"}
                     _set_attr(image_general_span, "mode", "vision_pro_qa")
                     _set_attr(image_general_span, "answer_preview", _trim(answer, 220))
-
-                    if save_history and answer:
-                        mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
-
-                    return {
-                        "answer": answer,
-                        "pages_used": [],
-                        "citations": [],
-                        "images": [],
-                        "tool_result": tool_result,
-                        "source_file": "uploaded_image",
-                        "query_type": "qa",
-                    }
+                    replan = _orchestrator_replan_after_step(
+                        query_text=query,
+                        plan=plan,
+                        step_name="image_first_general",
+                        provisional_answer=answer,
+                        tool_result=tool_result,
+                        pages_used_count=0,
+                        citations_count=0,
+                    )
+                    _add_event(image_general_span, "qa.orchestrator.replan.image_first_general", {k: str(v) for k, v in replan.items()})
+                    _emit_ui_updates(replan.get("ui_updates"))
+                    if bool(replan.get("finalize_now", True)):
+                        if save_history and answer:
+                            mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
+                        return {
+                            "answer": answer,
+                            "pages_used": [],
+                            "citations": [],
+                            "images": [],
+                            "tool_result": tool_result,
+                            "source_file": "uploaded_image",
+                            "query_type": "qa",
+                        }
+                    _apply_replan_directive(replan)
+                    force_continue_page_level = True
                 except Exception as exc:
                     _set_attr(image_general_span, "error", _trim(str(exc), 180))
-        force_page_level = routed_tool in {"count", "area", "viz", "search", "report_pdf", "report_excel"}
+        force_page_level = bool(plan.get("force_page_level", False)) or (
+            routed_tool in {"count", "area", "viz", "search", "report_pdf", "report_excel"}
+        )
+        if isinstance(flow_overrides.get("force_page_level"), bool):
+            force_page_level = bool(flow_overrides["force_page_level"])
+        if force_continue_page_level:
+            force_page_level = True
         _set_attr(root_span, "routed_tool", routed_tool)
         _set_attr(root_span, "force_page_level", force_page_level)
 
@@ -542,6 +1073,13 @@ Reply ONLY as JSON:
             # already carries short summaries for folder-agent selection.
         _set_attr(root_span, "effective_context_preview", _trim(effective_folder_summary, 300))
 
+        allow_folder_direct_answer = bool(plan.get("allow_folder_direct_answer", True))
+        allow_file_direct_answer = bool(plan.get("allow_file_direct_answer", True))
+        if isinstance(flow_overrides.get("allow_folder_direct_answer"), bool):
+            allow_folder_direct_answer = bool(flow_overrides["allow_folder_direct_answer"])
+        if isinstance(flow_overrides.get("allow_file_direct_answer"), bool):
+            allow_file_direct_answer = bool(flow_overrides["allow_file_direct_answer"])
+
         if file_id:
             target_file_ids = [file_id]
         else:
@@ -565,18 +1103,32 @@ Reply ONLY as JSON:
                 _set_attr(folder_agent_span, "action", str(folder_result.get("action", "")))
                 _set_attr(folder_agent_span, "selected_file_count", len(folder_result.get("file_ids", []) or []))
                 _set_attr(folder_agent_span, "answer_preview", _trim(str(folder_result.get("answer", "")), 200))
-            if (not force_page_level) and folder_result.get("action") == "answer" and folder_result.get("answer"):
+            if allow_folder_direct_answer and (not force_page_level) and folder_result.get("action") == "answer" and folder_result.get("answer"):
                 answer = folder_result["answer"]
-                if save_history:
-                    mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
-                return {
-                    "answer": answer,
-                    "pages_used": [],
-                    "images": [],
-                    "tool_result": None,
-                    "source_file": "folder_summary",
-                    "query_type": "qa",
-                }
+                replan = _orchestrator_replan_after_step(
+                    query_text=query,
+                    plan=plan,
+                    step_name="folder_direct_answer",
+                    provisional_answer=answer,
+                    tool_result=None,
+                    pages_used_count=0,
+                    citations_count=0,
+                )
+                _add_event(folder_agent_span, "qa.orchestrator.replan.folder_answer", {k: str(v) for k, v in replan.items()})
+                _emit_ui_updates(replan.get("ui_updates"))
+                if bool(replan.get("finalize_now", True)):
+                    if save_history:
+                        mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
+                    return {
+                        "answer": answer,
+                        "pages_used": [],
+                        "images": [],
+                        "tool_result": None,
+                        "source_file": "folder_summary",
+                        "query_type": "qa",
+                    }
+                _apply_replan_directive(replan)
+                force_page_level = True
             selected_file_ids = folder_result.get("file_ids", []) or []
             if selected_file_ids:
                 target_file_ids = selected_file_ids
@@ -616,18 +1168,32 @@ Reply ONLY as JSON:
                         _set_attr(file_agent_span, "action", str(file_result.get("action", "")))
                         _set_attr(file_agent_span, "page_candidates_count", len(file_result.get("candidate_pages", []) or []))
                         _set_attr(file_agent_span, "answer_preview", _trim(str(file_result.get("answer", "")), 180))
-                    if file_result.get("action") == "answer" and file_result.get("answer"):
+                    if allow_file_direct_answer and file_result.get("action") == "answer" and file_result.get("answer"):
                         answer = file_result["answer"]
-                        if save_history:
-                            mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
-                        return {
-                            "answer": answer,
-                            "pages_used": [],
-                            "images": [],
-                            "tool_result": None,
-                            "source_file": source_file_name,
-                            "query_type": "qa",
-                        }
+                        replan = _orchestrator_replan_after_step(
+                            query_text=query,
+                            plan=plan,
+                            step_name="file_direct_answer",
+                            provisional_answer=answer,
+                            tool_result=None,
+                            pages_used_count=0,
+                            citations_count=0,
+                        )
+                        _add_event(file_agent_span, "qa.orchestrator.replan.file_answer", {k: str(v) for k, v in replan.items()})
+                        _emit_ui_updates(replan.get("ui_updates"))
+                        if bool(replan.get("finalize_now", True)):
+                            if save_history:
+                                mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
+                            return {
+                                "answer": answer,
+                                "pages_used": [],
+                                "images": [],
+                                "tool_result": None,
+                                "source_file": source_file_name,
+                                "query_type": "qa",
+                            }
+                        _apply_replan_directive(replan)
+                        force_page_level = True
                     candidate_pages_raw = file_result.get("candidate_pages", []) or []
                     candidate_pages_from_file = sorted(
                         {

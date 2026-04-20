@@ -202,6 +202,14 @@ def update_file_short_summary(file_id: str, short_summary: str) -> None:
     )
 
 
+def update_file_title_block_index(file_id: str, title_block_index: list[dict]) -> None:
+    """Store per-page title-block metadata index for fast lookup."""
+    get_db()["files"].update_one(
+        {"_id": file_id},
+        {"$set": {"title_block_index": title_block_index, "updated_at": _now()}},
+    )
+
+
 def update_folder_summary(folder_id: str, summary: str) -> None:
     get_db()["folders"].update_one(
         {"_id": folder_id},

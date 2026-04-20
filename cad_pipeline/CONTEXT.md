@@ -296,6 +296,10 @@ count_result (có "positions")
          → viết 2-3 câu văn xuôi tiếng Nhật → files.short_summary
     → build_folder_summary() — ghép short_summary tất cả files trong folder
          → folders.summary (rebuild mỗi lần có file mới)
+    → Build title-block index per file:
+         · duyệt processed_blocks, lấy block type=title_block
+         · chuẩn hóa metadata (drawing_no, drawing_title, project) theo page
+         · lưu vào files.title_block_index để lookup nhanh ảnh→file/page
 ```
 
 **Tại sao cần 2 tầng file summary?**
@@ -311,26 +315,38 @@ User query + session_id (khuyến nghị) / folder_id (backward-compatible)
       (cho phép file khác folder trong cùng 1 session)
   → Router (Gemini 2.5 Flash): keyword match → "qa" | "search"
       qa:
-        → Nếu turn có ảnh upload:
-            · Chạy "image scope decision" (Gemini Flash) dựa trên ngữ nghĩa query + chat history
-            · Quyết định `use_uploaded_image=true|false` (không dùng keyword hard-code)
-            · true  → ưu tiên flow ảnh upload
-            · false → bỏ ảnh cho turn hiện tại, quay về page/file flow bình thường
-        → Tool shortcut từ chat history (không cần đọc lại page):
-            · Áp dụng cho count/area/report_pdf/report_excel khi history đã đủ dữ kiện
-            · Chỉ chạy khi turn hiện tại không dùng uploaded image
-            · Nếu kết quả count=0 hoặc confidence thấp → KHÔNG trả thẳng, fallback xuống page-level
-        → Folder Agent (Gemini 2.5 Flash)
+        → Direct-chat quick route (Gemini Flash, trước orchestrator):
+            · Áp dụng cho chào hỏi / small-talk / câu hỏi ngoài phạm vi tài liệu CAD
+            · Trả lời trực tiếp theo ngôn ngữ user
+            · Không chạy plan/tool/page pipeline
+        → Orchestrator Agent (Gemini 3.1 Pro) lập execution plan cho từng turn:
+            · Input: query + chat_history + has_image + tool_router_hint
+            · Output plan:
+                - grounding_mode: uploaded_image | page_context | hybrid
+                - preferred_tool
+                - use_history_shortcut
+                - force_page_level
+                - allow_folder_direct_answer / allow_file_direct_answer
+                - allow_image_early_answer
+            · Có early-exit: dừng sớm khi evidence đủ mạnh (không bắt buộc chạy hết pipeline)
+            · Có replan sau từng bước "trả lời sớm" (history/image/folder/file):
+                - orchestrator đánh giá provisional answer + tool_result
+                - trả `next_tool_sequence` rõ ràng (vd: ["file_agent","page_agent"])
+                - quyết định finalize ngay hoặc tiếp tục theo sequence để tăng grounding/citation
+        → History tool shortcut (theo quyết định orchestrator):
+            · count/area/report_pdf/report_excel từ chat_history khi context đủ dữ kiện
+            · Nếu count=0 hoặc confidence thấp → fallback xuống page-level
+        → Folder Agent (Gemini 2.5 Flash, được orchestrator gọi như 1 tool)
             · Input: list file.short_summary trong session scope
             · Chỉ answer nếu là câu hỏi overview rất chung chung
-            · "answer" → save history, trả thẳng
+            · Nếu plan cho phép early-exit ở folder-level: "answer" → save history, trả thẳng
             · "go_to_file" → chọn ≤3 files
-        → File Agent (Gemini 2.5 Flash) × N files
+        → File Agent (Gemini 2.5 Flash, orchestrator tool) × N files
             · Input: query + files.summary (full)
             · Chỉ answer nếu summary có thông tin CỤ THỂ, còn lại escalate
-            · "answer" → save history, trả thẳng
+            · Nếu plan cho phép early-exit ở file-level: "answer" → save history, trả thẳng
             · "go_to_page" → trả candidate_pages (page_number list) để load hẹp
-        → Page Agent — 2 stage:
+        → Page Agent (orchestrator tool) — 2 stage:
             ┌─ Stage 1: Page Selector (Gemini 2.5 Flash)
             │   · Input: short_summary của page pool đã lọc (candidate_pages)
             │   · Output: top 5 page numbers liên quan nhất
@@ -343,10 +359,11 @@ User query + session_id (khuyến nghị) / folder_id (backward-compatible)
             · count → count_tool (DXF exact / Gemini Pro Vision)
             · area  → area_tool  (catalog / Gemini Pro Vision / Gemini 2.5 Flash)
             · viz   → viz_tool   (vẽ boxes lên ảnh trang)
-        → Image-first hard guards (khi `use_uploaded_image=true`):
-            · routed_tool=count → chạy count trực tiếp trên ảnh upload, không đi page-level
-            · routed_tool=area  → chạy area trực tiếp trên ảnh upload, không đi page-level
-            · routed_tool=none  → chạy general vision QA trực tiếp trên ảnh upload
+        → Image early-answer (nếu orchestrator cho phép):
+            · preferred_tool=count → chạy count trực tiếp trên ảnh upload
+            · preferred_tool=area  → chạy area trực tiếp trên ảnh upload
+            · preferred_tool=none  → chạy general vision QA trực tiếp trên ảnh upload
+            · nếu không đủ confidence/evidence thì orchestrator replan và tiếp tục xuống page-level
         → Save turn → MongoDB chat_history (giữ 5 turns gần nhất, $slice=-5)
       search:
         → chuyển sang Search pipeline (xem mục 9)
@@ -395,12 +412,36 @@ Delete folder:
 ### 9. Search pipeline (tính năng riêng, độc lập với chatbot — không dùng Gemini)
 ```
 User query
+  → Nếu có ảnh:
+      1) title-block-first lookup:
+         · trích drawing_no / drawing_title / project từ ảnh
+         · match deterministic với files.title_block_index
+         · nếu match đủ điểm → trả kết quả ngay (retrieval_mode=title_block_index)
+      2) nếu không match → fallback vector search
   → Cohere embed (search_query, 1024-dim)
   → Qdrant top-K=100 (filter score ≥ 0.2, optional folder/file filter)
   → Fetch page + file metadata từ MongoDB
   → Return top-N=15: {file_name, page_number, image_url, vector_score}
 ```
 Search trả raw results để frontend tự hiển thị, **không có agent tổng hợp câu trả lời**.
+
+### 9b. Title-block lookup (ảnh thuộc file nào)
+```
+User upload ảnh + hỏi "ảnh này ở file nào?"
+  → Trích xuất title_block metadata từ ảnh upload (drawing_no/title/project)
+  → So khớp nhanh với files.title_block_index trong scope session/folder
+  → Nếu match đủ điểm:
+      trả file_name + page_number + citation ngay
+  → Nếu không match:
+      fallback sang orchestrator/page-level/similarity flow bình thường
+```
+
+Backfill cho dữ liệu cũ:
+```bash
+python -m cad_pipeline.scripts.backfill_title_block_index
+python -m cad_pipeline.scripts.backfill_title_block_index --folder-id <folder_id>
+python -m cad_pipeline.scripts.backfill_title_block_index --file-id <file_id>
+```
 
 ---
 

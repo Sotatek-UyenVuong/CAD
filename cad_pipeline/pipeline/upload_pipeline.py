@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
+import re
 import cv2
 from pathlib import Path
 from typing import Callable
@@ -115,6 +116,7 @@ def run_upload_pipeline(
     page_summaries: list[str] = []
     page_ids: list[str] = []
     qdrant_records: list[dict] = []
+    title_block_index: list[dict] = []
 
     for page_info in pages_info:
         page_number = page_info["page_number"]
@@ -151,6 +153,7 @@ def run_upload_pipeline(
             short_summary = _summary_future.result()
             processed_blocks = _blocks_future.result()
         page_summaries.append(short_summary)
+        title_block_index.extend(_extract_title_block_entries(page_number, processed_blocks))
 
         # ── Step 6c: Upload block crops to S3 (optional) ─────────────────────
         if USE_S3 and upload_blocks:
@@ -208,6 +211,7 @@ def run_upload_pipeline(
     # Generate a short summary for this file via Gemini Flash
     file_short_summary = generate_file_short_summary(file_name, page_summaries)
     mongo.update_file_short_summary(file_id, file_short_summary)
+    mongo.update_file_title_block_index(file_id, title_block_index)
 
     # Rebuild folder-level summary using short summaries of all files in folder
     all_file_docs = mongo.list_files(folder_id)
@@ -257,3 +261,56 @@ def _upload_block_crops(
 
 def _make_id(seed: str) -> str:
     return hashlib.md5(seed.encode()).hexdigest()[:12]
+
+
+def _normalize_title_block_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def _extract_title_block_entries(page_number: int, processed_blocks: list[dict]) -> list[dict]:
+    """Extract normalized title-block metadata from processed blocks for indexing."""
+    entries: list[dict] = []
+    for block in processed_blocks:
+        if str(block.get("type", "")) != "title_block":
+            continue
+        content = block.get("content")
+        if not isinstance(content, dict):
+            continue
+        drawing_no = _normalize_title_block_text(
+            content.get("drawing_no")
+            or content.get("drawing_number")
+            or content.get("sheet_no")
+            or content.get("sheet_number")
+            or content.get("図面番号")
+            or content.get("図番")
+        )
+        drawing_title = _normalize_title_block_text(
+            content.get("drawing_title")
+            or content.get("title")
+            or content.get("sheet_title")
+            or content.get("図面名称")
+            or content.get("図面名")
+        )
+        project = _normalize_title_block_text(
+            content.get("project")
+            or content.get("project_name")
+            or content.get("工事名")
+            or content.get("物件名")
+        )
+        if not (drawing_no or drawing_title or project):
+            continue
+        entries.append(
+            {
+                "page_number": int(page_number),
+                "drawing_no": drawing_no,
+                "drawing_title": drawing_title,
+                "project": project,
+                "source": "title_block",
+                "raw": content,
+            }
+        )
+    return entries

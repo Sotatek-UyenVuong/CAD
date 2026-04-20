@@ -15,7 +15,12 @@ Flow:
 from __future__ import annotations
 
 import base64
+import json
+import re
 from pathlib import Path
+
+import cv2
+import numpy as np
 
 from cad_pipeline.config import (
     GEMINI_API_KEY,
@@ -68,6 +73,194 @@ def _describe_image(
         return response.text.strip()
     except Exception:
         return ""
+
+
+def _extract_title_block_query(
+    image_bytes: bytes,
+    hint: str = "",
+    model: str | None = None,
+) -> dict[str, str]:
+    """Extract title-block metadata with layout-first strategy.
+
+    Strategy:
+    1) Try layout detection and crop the best title_block region.
+    2) Run Gemini extraction on cropped title_block.
+    3) If no title_block detected or extraction fails, fallback to full image.
+    """
+    try:
+        from google import genai  # type: ignore
+        from google.genai import types as _gt  # type: ignore
+        from cad_pipeline.core.layout_detect import LayoutDetector  # lazy import to avoid heavy load at module import time
+
+        _model = model or GEMINI_FLASH_MODEL
+        client = genai.Client(api_key=GEMINI_API_KEY)
+
+        hint_text = f'\nUser context: "{hint}"' if hint else ""
+        prompt = (
+            "You are reading title-block metadata from an architectural CAD drawing image.\n"
+            "Extract likely drawing number/title/project fields if visible."
+            f"{hint_text}\n"
+            "Return ONLY JSON:\n"
+            '{ "drawing_no": "<string or empty>", "drawing_title": "<string or empty>", "project": "<string or empty>" }'
+        )
+        def _extract_from_bytes(img_bytes: bytes) -> dict[str, str]:
+            response = client.models.generate_content(
+                model=_model,
+                contents=[
+                    _gt.Part.from_bytes(data=img_bytes, mime_type="image/png"),
+                    prompt,
+                ],
+            )
+            raw = response.text.strip()
+            raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
+            parsed = json.loads(raw)
+            return {
+                "drawing_no": str(parsed.get("drawing_no", "")).strip(),
+                "drawing_title": str(parsed.get("drawing_title", "")).strip(),
+                "project": str(parsed.get("project", "")).strip(),
+            }
+
+        # 1) Try detectron layout and crop title_block
+        try:
+            arr = np.frombuffer(image_bytes, dtype=np.uint8)
+            image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if image is not None:
+                detector = LayoutDetector.get()
+                blocks = detector.predict_image(image)
+                title_blocks = [b for b in blocks if b.label == "title_block" and b.width > 0 and b.height > 0]
+                if title_blocks:
+                    # Pick most reliable title block region.
+                    best = max(title_blocks, key=lambda b: float(b.score) * max(1, b.width * b.height))
+                    crop = best.crop(image)
+                    ok, buf = cv2.imencode(".png", crop)
+                    if ok:
+                        return _extract_from_bytes(buf.tobytes())
+        except Exception:
+            # fall through to full-image extraction
+            pass
+
+        # 2) Fallback: full image
+        return _extract_from_bytes(image_bytes)
+    except Exception:
+        return {"drawing_no": "", "drawing_title": "", "project": ""}
+
+
+def _norm(value: object) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"\s+", "", text)
+    text = re.sub(r"[-_‐‑‒–—―]", "", text)
+    return text
+
+
+def _title_block_index_lookup(
+    *,
+    title_query: dict[str, str],
+    folder_id: str | None = None,
+    file_id: str | None = None,
+    top_n: int = 10,
+) -> list[dict]:
+    """Deterministic lookup by file.title_block_index."""
+    q_no = _norm(title_query.get("drawing_no"))
+    q_title = _norm(title_query.get("drawing_title"))
+    q_project = _norm(title_query.get("project"))
+    if not (q_no or q_title or q_project):
+        return []
+
+    db = mongo.get_db()
+    query: dict = {}
+    if file_id:
+        query["_id"] = file_id
+    elif folder_id:
+        query["folder_id"] = folder_id
+    query["title_block_index.0"] = {"$exists": True}
+
+    file_docs = list(
+        db["files"].find(
+            query,
+            {"_id": 1, "folder_id": 1, "file_name": 1, "title_block_index": 1},
+        )
+    )
+    if not file_docs:
+        return []
+
+    folder_ids = {str(f.get("folder_id", "")) for f in file_docs if f.get("folder_id")}
+    folders_map: dict[str, str] = {}
+    if folder_ids:
+        for fol in db["folders"].find({"_id": {"$in": list(folder_ids)}}, {"name": 1}):
+            folders_map[str(fol["_id"])] = fol.get("name", str(fol["_id"]))
+
+    page_cache: dict[str, dict[int, dict]] = {}
+    scored: list[dict] = []
+    for file_doc in file_docs:
+        fid = str(file_doc.get("_id", ""))
+        rows = file_doc.get("title_block_index") or []
+        if not isinstance(rows, list):
+            continue
+        if fid not in page_cache:
+            pages = mongo.get_pages_by_file(
+                fid,
+                projection={"page_number": 1, "image_url": 1, "short_summary": 1},
+            )
+            page_cache[fid] = {int(p.get("page_number", 0)): p for p in pages}
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            score = 0.0
+            no = _norm(row.get("drawing_no"))
+            title = _norm(row.get("drawing_title"))
+            project = _norm(row.get("project"))
+
+            if q_no and no:
+                if q_no == no:
+                    score += 0.8
+                elif q_no in no or no in q_no:
+                    score += 0.5
+            if q_title and title:
+                if q_title == title:
+                    score += 0.5
+                elif q_title in title or title in q_title:
+                    score += 0.3
+            if q_project and project:
+                if q_project == project:
+                    score += 0.2
+                elif q_project in project or project in q_project:
+                    score += 0.1
+
+            if score < 0.45:
+                continue
+
+            pno = int(row.get("page_number") or 0)
+            page_doc = page_cache.get(fid, {}).get(pno, {})
+            folder_key = str(file_doc.get("folder_id", ""))
+            scored.append(
+                {
+                    "file_id": fid,
+                    "file_name": file_doc.get("file_name", fid),
+                    "folder_id": folder_key,
+                    "folder_name": folders_map.get(folder_key, folder_key),
+                    "page_number": pno,
+                    "image_url": page_doc.get("image_url", ""),
+                    "short_summary": str(page_doc.get("short_summary", ""))[:200],
+                    "vector_score": round(score, 4),
+                    "_score": score,
+                }
+            )
+
+    scored.sort(key=lambda x: x.get("_score", 0.0), reverse=True)
+    dedup: list[dict] = []
+    seen: set[tuple[str, int]] = set()
+    for item in scored:
+        key = (str(item["file_id"]), int(item["page_number"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        item["rank"] = len(dedup) + 1
+        item.pop("_score", None)
+        dedup.append(item)
+        if len(dedup) >= top_n:
+            break
+    return dedup
 
 
 # ── Core search logic ───────────────────────────────────────────────────────
@@ -125,8 +318,25 @@ def run_search_tool(
 
     # ── 2. Describe image with Gemini (if provided) ─────────────────────────
     description = ""
+    title_query = {"drawing_no": "", "drawing_title": "", "project": ""}
     if _img:
         description = _describe_image(_img, hint=query or "", model=gemini_model)
+        title_query = _extract_title_block_query(_img, hint=query or "", model=gemini_model)
+        title_hits = _title_block_index_lookup(
+            title_query=title_query,
+            folder_id=folder_id,
+            file_id=file_id,
+            top_n=top_n,
+        )
+        if title_hits:
+            return {
+                "query_used": query or "",
+                "image_description": description,
+                "title_block_query": title_query,
+                "retrieval_mode": "title_block_index",
+                "total": len(title_hits),
+                "results": title_hits,
+            }
 
     # ── 3. Build final query ────────────────────────────────────────────────
     parts = [p for p in [query, description] if p]
@@ -157,6 +367,8 @@ def run_search_tool(
         return {
             "query_used": final_query,
             "image_description": description,
+            "title_block_query": title_query,
+            "retrieval_mode": "vector_search",
             "total": 0,
             "results": [],
         }
@@ -193,6 +405,8 @@ def run_search_tool(
     return {
         "query_used":        final_query,
         "image_description": description,
+        "title_block_query": title_query,
+        "retrieval_mode": "vector_search",
         "total":             len(results),
         "results":           results,
     }

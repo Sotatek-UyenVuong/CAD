@@ -232,8 +232,18 @@ def qa_stream_endpoint(req: QARequest, _user: dict = Depends(get_current_user)):
     events: queue.Queue[tuple[str, dict]] = queue.Queue()
     streamed_any_delta = False
 
-    def _emit_step(step: str) -> None:
-        events.put(("step", {"message": step}))
+    def _emit_step(step: dict) -> None:
+        if isinstance(step, dict):
+            payload = {
+                "phase": str(step.get("phase", "step")),
+                "message": str(step.get("message", "")),
+                "step_id": str(step.get("step_id", "")),
+                "tool": str(step.get("tool", "")),
+                "status": str(step.get("status", "")),
+            }
+            events.put(("step", payload))
+            return
+        events.put(("step", {"phase": "step", "message": str(step)}))
 
     def _emit_delta(text: str) -> None:
         nonlocal streamed_any_delta
@@ -304,12 +314,18 @@ def start_qa_job(
         "error": None,
     }
 
-    def _append_step(step: str) -> None:
+    def _append_step(step: dict) -> None:
         payload = _qa_jobs.get(job_id)
         if not payload:
             return
-        payload["steps"].append(step)
-        payload["current_step"] = step
+        if isinstance(step, dict):
+            message = str(step.get("message", ""))
+            payload["steps"].append(step)
+            payload["current_step"] = message
+        else:
+            step_text = str(step)
+            payload["steps"].append({"phase": "step", "message": step_text})
+            payload["current_step"] = step_text
 
     def _run() -> None:
         try:
@@ -401,6 +417,87 @@ async def qa_image_endpoint(
     )
 
     return _attach_report_download_url(result)
+
+
+@app.post("/qa/image/stream")
+async def qa_image_stream_endpoint(
+    query: Annotated[str, Form()] = "",
+    folder_id: Annotated[str, Form()] = "",
+    session_id: Annotated[str | None, Form()] = None,
+    file_id: Annotated[str | None, Form()] = None,
+    image: Annotated[UploadFile | None, File()] = None,
+    _user: dict = Depends(get_current_user),
+):
+    """Stream Q&A progress + answer chunks (SSE) with optional uploaded image."""
+    scope_id = session_id or folder_id
+    if not scope_id:
+        raise HTTPException(status_code=422, detail="folder_id or session_id is required")
+
+    img_bytes: bytes | None = None
+    if image and image.filename:
+        img_bytes = await image.read()
+
+    events: queue.Queue[tuple[str, dict]] = queue.Queue()
+    streamed_any_delta = False
+
+    def _emit_step(step: dict) -> None:
+        if isinstance(step, dict):
+            payload = {
+                "phase": str(step.get("phase", "step")),
+                "message": str(step.get("message", "")),
+                "step_id": str(step.get("step_id", "")),
+                "tool": str(step.get("tool", "")),
+                "status": str(step.get("status", "")),
+            }
+            events.put(("step", payload))
+            return
+        events.put(("step", {"phase": "step", "message": str(step)}))
+
+    def _emit_delta(text: str) -> None:
+        nonlocal streamed_any_delta
+        if not text:
+            return
+        streamed_any_delta = True
+        events.put(("delta", {"text": text}))
+
+    def _run() -> None:
+        try:
+            result = run_qa(
+                query=query,
+                folder_id=scope_id,
+                file_id=file_id,
+                session_file_ids=(mongo.get_chat_session(scope_id, user_email=_user["email"]) or {}).get("file_ids"),
+                user_email=_user["email"],
+                image_bytes=img_bytes,
+                progress_callback=_emit_step,
+                answer_stream_callback=_emit_delta,
+            )
+            result = _attach_report_download_url(result)
+            answer = str(result.get("answer") or "")
+            if answer and not streamed_any_delta:
+                chunk_size = 120
+                for i in range(0, len(answer), chunk_size):
+                    events.put(("delta", {"text": answer[i:i + chunk_size]}))
+            events.put(("final", result))
+        except Exception as exc:
+            events.put(("error", {"message": str(exc)}))
+        finally:
+            events.put(("done", {}))
+
+    threading.Thread(target=_run, daemon=True).start()
+
+    def _stream():
+        yield _sse_event("open", {"status": "ok"})
+        while True:
+            try:
+                event, payload = events.get(timeout=20)
+                yield _sse_event(event, payload)
+                if event == "done":
+                    break
+            except queue.Empty:
+                yield ": keep-alive\n\n"
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
 # ── Reports download ───────────────────────────────────────────────────────
