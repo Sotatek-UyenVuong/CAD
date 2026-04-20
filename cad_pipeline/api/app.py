@@ -25,18 +25,22 @@ import shutil
 import tempfile
 import threading
 import uuid
+import hashlib
 from pathlib import Path
 from typing import Annotated
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from cad_pipeline.api.auth import get_current_user, require_role, router as auth_router, decode_token
 from cad_pipeline.agents.router import classify_query
-from cad_pipeline.config import LOCAL_IMAGES_DIR, USE_S3, REPORTS_DIR
+from cad_pipeline.config import API_BASE_URL, LOCAL_CHAT_UPLOADS_DIR, LOCAL_IMAGES_DIR, USE_S3, REPORTS_DIR
 from cad_pipeline.pipeline.upload_pipeline import run_upload_pipeline
 from cad_pipeline.pipeline.qa_pipeline import run_qa
 from cad_pipeline.pipeline.search_pipeline import run_search
@@ -75,6 +79,14 @@ if not USE_S3:
     LOCAL_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     app.mount("/images", StaticFiles(directory=LOCAL_IMAGES_DIR, follow_symlink=True), name="images")
 
+# Persist uploaded chat images so history restore can render them after reload.
+LOCAL_CHAT_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount(
+    "/chat-uploads",
+    StaticFiles(directory=LOCAL_CHAT_UPLOADS_DIR, follow_symlink=True),
+    name="chat-uploads",
+)
+
 # Shared directory for generated reports (PDF / Excel)
 # Accessible at: GET /reports/{filename}
 _REPORTS_DIR = REPORTS_DIR
@@ -98,6 +110,17 @@ def _attach_report_download_url(result: dict) -> dict:
         src = dst
     result["download_url"] = f"/reports/{src.name}"
     return result
+
+
+def _persist_chat_upload_image(image_bytes: bytes, filename: str | None = None) -> str:
+    ext = Path(filename or "").suffix.lower()
+    if ext not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+        ext = ".png"
+    digest = hashlib.sha1(image_bytes).hexdigest()[:16]
+    safe_name = f"{uuid.uuid4().hex[:10]}_{digest}{ext}"
+    out = LOCAL_CHAT_UPLOADS_DIR / safe_name
+    out.write_bytes(image_bytes)
+    return f"{API_BASE_URL}/chat-uploads/{safe_name}"
 
 
 def _sse_event(event: str, data: dict) -> str:
@@ -393,8 +416,11 @@ async def qa_image_endpoint(
         raise HTTPException(status_code=422, detail="folder_id or session_id is required")
 
     img_bytes: bytes | None = None
+    user_image_url: str | None = None
     if image and image.filename:
         img_bytes = await image.read()
+        if img_bytes:
+            user_image_url = _persist_chat_upload_image(img_bytes, image.filename)
 
     # Image only → force search_tool
     if img_bytes and not query:
@@ -414,6 +440,7 @@ async def qa_image_endpoint(
         session_file_ids=(mongo.get_chat_session(scope_id, user_email=_user["email"]) or {}).get("file_ids"),
         user_email=_user["email"],
         image_bytes=img_bytes,
+        user_image_url=user_image_url,
     )
 
     return _attach_report_download_url(result)
@@ -434,8 +461,11 @@ async def qa_image_stream_endpoint(
         raise HTTPException(status_code=422, detail="folder_id or session_id is required")
 
     img_bytes: bytes | None = None
+    user_image_url: str | None = None
     if image and image.filename:
         img_bytes = await image.read()
+        if img_bytes:
+            user_image_url = _persist_chat_upload_image(img_bytes, image.filename)
 
     events: queue.Queue[tuple[str, dict]] = queue.Queue()
     streamed_any_delta = False
@@ -469,6 +499,7 @@ async def qa_image_stream_endpoint(
                 session_file_ids=(mongo.get_chat_session(scope_id, user_email=_user["email"]) or {}).get("file_ids"),
                 user_email=_user["email"],
                 image_bytes=img_bytes,
+                user_image_url=user_image_url,
                 progress_callback=_emit_step,
                 answer_stream_callback=_emit_delta,
             )
@@ -765,6 +796,25 @@ def get_original_file(
     if not file_url:
         raise HTTPException(status_code=404, detail="Original file URL not found")
 
+    parsed = urlparse(str(file_url))
+    is_remote_url = parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+    filename = str(file_doc.get("file_name") or Path(parsed.path).name or file_id)
+
+    if is_remote_url:
+        try:
+            method = "HEAD" if request.method.upper() == "HEAD" else "GET"
+            req = UrlRequest(str(file_url), method=method)
+            with urlopen(req, timeout=20) as upstream:
+                content_type = upstream.headers.get("Content-Type", "") or "application/octet-stream"
+                headers = {"Content-Disposition": f'inline; filename="{filename}"'}
+                if method == "HEAD":
+                    return Response(status_code=200, media_type=content_type, headers=headers)
+                return Response(content=upstream.read(), media_type=content_type, headers=headers)
+        except HTTPError as exc:
+            raise HTTPException(status_code=exc.code or 502, detail=f"Cannot fetch original file URL: HTTP {exc.code}") from exc
+        except URLError as exc:
+            raise HTTPException(status_code=502, detail="Cannot fetch original file URL") from exc
+
     path = Path(str(file_url))
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="Original file not found on disk")
@@ -772,7 +822,7 @@ def get_original_file(
     media_type, _ = mimetypes.guess_type(path.name)
     return FileResponse(
         path=str(path),
-        filename=file_doc.get("file_name") or path.name,
+        filename=filename,
         media_type=media_type or "application/octet-stream",
         content_disposition_type="inline",
     )

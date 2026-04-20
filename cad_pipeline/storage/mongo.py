@@ -245,6 +245,8 @@ def append_chat_turn(
     user_message: str,
     assistant_message: str,
     user_email: str | None = None,
+    user_meta: dict | None = None,
+    assistant_meta: dict | None = None,
 ) -> None:
     """Append a Q&A turn to folder chat history, keeping only the last 5."""
     db = get_db()
@@ -252,6 +254,8 @@ def append_chat_turn(
     turn = {
         "role_user": user_message,
         "role_assistant": assistant_message,
+        "user_meta": user_meta or {},
+        "assistant_meta": assistant_meta or {},
         "ts": _now(),
     }
     db["chat_history"].update_one(

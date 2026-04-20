@@ -31,6 +31,7 @@ def run_qa(
     user_email: str | None = None,
     save_history: bool = True,
     image_bytes: bytes | None = None,
+    user_image_url: str | None = None,
     progress_callback: Callable[[dict], None] | None = None,
     answer_stream_callback: Callable[[str], None] | None = None,
 ) -> dict:
@@ -132,6 +133,36 @@ def run_qa(
             lines.append(f"User: {t.get('role_user', '')}")
             lines.append(f"Assistant: {t.get('role_assistant', '')}")
         return "\n".join(lines)
+
+    def _save_turn(
+        answer_text: str,
+        *,
+        citations: list[dict] | None = None,
+        images: list[str] | None = None,
+        tool_result: dict | None = None,
+        source_file: str | None = None,
+    ) -> None:
+        if not save_history or not answer_text:
+            return
+        assistant_image_url = ""
+        if isinstance(tool_result, dict):
+            assistant_image_url = str(tool_result.get("image_url") or "").strip()
+        if not assistant_image_url and images:
+            assistant_image_url = str(images[0] or "").strip()
+        user_meta = {"image_url": user_image_url} if user_image_url else {}
+        assistant_meta = {
+            "citations": citations or [],
+            "image_url": assistant_image_url,
+            "source_file": source_file or "",
+        }
+        mongo.append_chat_turn(
+            folder_id,
+            query,
+            answer_text,
+            user_email=user_email,
+            user_meta=user_meta,
+            assistant_meta=assistant_meta,
+        )
 
     def _norm_text(value: object) -> str:
         text = str(value or "").strip().lower()
@@ -694,8 +725,7 @@ Return ONLY JSON:
                             "tool": "direct_chat",
                         }
                     )
-                    if save_history and answer:
-                        mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
+                    _save_turn(answer, source_file="general_chat", tool_result={"mode": "direct_non_doc"})
                     return {
                         "answer": answer,
                         "pages_used": [],
@@ -742,8 +772,17 @@ Return ONLY JSON:
                         f"アップロード画像は title block 情報に基づき **{match['file_name']}**（{match['page_number']}ページ）に一致しました。",
                         f"Your uploaded image matches **{match['file_name']}** (page {match['page_number']}) based on title-block metadata.",
                     )
-                    if save_history:
-                        mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
+                    _save_turn(
+                        answer,
+                        citations=[
+                            {
+                                "file_id": str(match["file_id"]),
+                                "file_name": str(match["file_name"]),
+                                "page_number": int(match["page_number"]),
+                            }
+                        ],
+                        source_file=str(match["file_name"]),
+                    )
                     return {
                         "answer": answer,
                         "pages_used": [int(match["page_number"])],
@@ -849,8 +888,13 @@ Return ONLY JSON:
                     )
                     _emit_ui_updates(replan.get("ui_updates"))
                     if bool(replan.get("finalize_now", True)):
-                        if save_history and shortcut.get("answer"):
-                            mongo.append_chat_turn(folder_id, query, str(shortcut["answer"]), user_email=user_email)
+                        _save_turn(
+                            str(shortcut.get("answer", "")),
+                            citations=shortcut.get("citations", []) if isinstance(shortcut.get("citations"), list) else [],
+                            images=shortcut.get("images", []) if isinstance(shortcut.get("images"), list) else [],
+                            tool_result=shortcut.get("tool_result") if isinstance(shortcut.get("tool_result"), dict) else None,
+                            source_file=str(shortcut.get("source_file", "chat_history")),
+                        )
                         return shortcut
                     _apply_replan_directive(replan)
                     force_continue_page_level = True
@@ -895,8 +939,7 @@ Return ONLY JSON:
                 _add_event(image_count_span, "qa.orchestrator.replan.image_first_count", {k: str(v) for k, v in replan.items()})
                 _emit_ui_updates(replan.get("ui_updates"))
                 if bool(replan.get("finalize_now", True)):
-                    if save_history and answer:
-                        mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
+                    _save_turn(answer, tool_result=tool_result, source_file="uploaded_image")
                     return {
                         "answer": answer,
                         "pages_used": [],
@@ -942,8 +985,7 @@ Return ONLY JSON:
                 _add_event(image_area_span, "qa.orchestrator.replan.image_first_area", {k: str(v) for k, v in replan.items()})
                 _emit_ui_updates(replan.get("ui_updates"))
                 if bool(replan.get("finalize_now", True)):
-                    if save_history and answer:
-                        mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
+                    _save_turn(answer, tool_result=tool_result, source_file="uploaded_image")
                     return {
                         "answer": answer,
                         "pages_used": [],
@@ -1000,8 +1042,7 @@ Return ONLY JSON:
                     _add_event(image_general_span, "qa.orchestrator.replan.image_first_general", {k: str(v) for k, v in replan.items()})
                     _emit_ui_updates(replan.get("ui_updates"))
                     if bool(replan.get("finalize_now", True)):
-                        if save_history and answer:
-                            mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
+                        _save_turn(answer, tool_result=tool_result, source_file="uploaded_image")
                         return {
                             "answer": answer,
                             "pages_used": [],
@@ -1117,8 +1158,7 @@ Return ONLY JSON:
                 _add_event(folder_agent_span, "qa.orchestrator.replan.folder_answer", {k: str(v) for k, v in replan.items()})
                 _emit_ui_updates(replan.get("ui_updates"))
                 if bool(replan.get("finalize_now", True)):
-                    if save_history:
-                        mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
+                    _save_turn(answer, source_file="folder_summary")
                     return {
                         "answer": answer,
                         "pages_used": [],
@@ -1182,8 +1222,7 @@ Return ONLY JSON:
                         _add_event(file_agent_span, "qa.orchestrator.replan.file_answer", {k: str(v) for k, v in replan.items()})
                         _emit_ui_updates(replan.get("ui_updates"))
                         if bool(replan.get("finalize_now", True)):
-                            if save_history:
-                                mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
+                            _save_turn(answer, source_file=source_file_name)
                             return {
                                 "answer": answer,
                                 "pages_used": [],
@@ -1307,7 +1346,13 @@ Return ONLY JSON:
                 answer_preview=_trim(answer, 220),
                 answer_length=len(answer),
             ) as save_span:
-                mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
+                _save_turn(
+                    answer,
+                    citations=page_result.get("citations", []) if isinstance(page_result.get("citations"), list) else [],
+                    images=page_result.get("images", []) if isinstance(page_result.get("images"), list) else [],
+                    tool_result=page_result.get("tool_result") if isinstance(page_result.get("tool_result"), dict) else None,
+                    source_file=source_file_name,
+                )
                 _add_event(save_span, "qa.chat_history.saved", {"user_email": user_email or "", "answer_length": len(answer)})
 
         _emit("Finalize response")

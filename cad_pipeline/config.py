@@ -75,6 +75,10 @@ USE_S3: bool = os.getenv("USE_S3", "false").lower() == "true"
 # ── Local fallback (used when USE_S3=false) ────────────────────────────────
 LOCAL_IMAGES_DIR: Path = Path(os.getenv("IMAGES_DIR", str(_HERE / "data" / "images")))
 LOCAL_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+LOCAL_ORIGINALS_DIR: Path = Path(os.getenv("ORIGINALS_DIR", str(_HERE / "data" / "originals")))
+LOCAL_ORIGINALS_DIR.mkdir(parents=True, exist_ok=True)
+LOCAL_CHAT_UPLOADS_DIR: Path = Path(os.getenv("CHAT_UPLOADS_DIR", str(_HERE / "data" / "chat_uploads")))
+LOCAL_CHAT_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Base URL cho static file serving (FastAPI mount /images)
 API_BASE_URL: str = os.getenv("API_BASE_URL", "http://localhost:8001").rstrip("/")

@@ -19,11 +19,12 @@ from __future__ import annotations
 import concurrent.futures
 import hashlib
 import re
+import shutil
 import cv2
 from pathlib import Path
 from typing import Callable
 
-from cad_pipeline.config import API_BASE_URL, LOCAL_IMAGES_DIR, PDF_DPI, USE_S3
+from cad_pipeline.config import API_BASE_URL, LOCAL_IMAGES_DIR, LOCAL_ORIGINALS_DIR, PDF_DPI, USE_S3
 from cad_pipeline.core.pdf_to_images import pdf_to_page_images
 from cad_pipeline.core.layout_detect import LayoutDetector
 from cad_pipeline.core.marker_pdf import marker_ocr_pdf, CHUNK_THRESHOLD
@@ -73,14 +74,23 @@ def run_upload_pipeline(
         if progress_callback:
             progress_callback(msg)
 
-    # ── Step 1: Upload original file to S3 (or keep local path) ────────────
+    # ── Step 1: Upload original file to S3 or persist local original ───────
     original_url = str(file_path)
     if USE_S3:
         log(f"[1/8] Uploading original file to S3...")
         from cad_pipeline.storage.s3_store import upload_original_file
         original_url = upload_original_file(file_path, folder_id, file_id, file_name)
     else:
-        log(f"[1/8] S3 disabled — using local path")
+        log(f"[1/8] S3 disabled — persisting original file locally")
+        safe_name = Path(file_name).name or file_path.name
+        target_dir = LOCAL_ORIGINALS_DIR / file_id
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_path = target_dir / safe_name
+        src_resolved = file_path.resolve()
+        dst_resolved = target_path.resolve()
+        if src_resolved != dst_resolved:
+            shutil.copy2(file_path, target_path)
+        original_url = str(target_path)
 
     # ── Step 2: Render PDF → page images ────────────────────────────────────
     log(f"[2/8] Rendering {file_name} → page images (dpi={dpi})...")
