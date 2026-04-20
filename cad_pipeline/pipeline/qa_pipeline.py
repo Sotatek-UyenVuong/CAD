@@ -157,7 +157,7 @@ def run_qa(
             else:
                 report_format = str(tool_result.get("format") or "").strip().lower()
                 report_path = str(tool_result.get("file_path") or "").strip()
-                if report_format in {"pdf", "excel"} and report_path:
+                if report_format in {"pdf", "excel", "docx"} and report_path:
                     report_name = Path(report_path).name
                     if report_name:
                         download_url = f"/reports/{report_name}"
@@ -450,6 +450,27 @@ Reply ONLY JSON:
                 "query_type": "qa",
             }
 
+        if tool_name == "report_docx":
+            from cad_pipeline.tools.report_tool import run_report_docx
+
+            tool_result = run_report_docx(query=query_text, pages=pages_like, tool_result=None)
+            if not tool_result.get("file_path"):
+                return None
+            answer = _msg(
+                f"Đã tạo báo cáo DOCX từ ngữ cảnh hội thoại: **{tool_result.get('file_name', '')}**",
+                f"会話コンテキストからDOCXレポートを作成しました: **{tool_result.get('file_name', '')}**",
+                f"Generated DOCX report from chat context: **{tool_result.get('file_name', '')}**",
+            )
+            return {
+                "answer": answer,
+                "pages_used": [],
+                "citations": [],
+                "images": [],
+                "tool_result": tool_result,
+                "source_file": "chat_history",
+                "query_type": "qa",
+            }
+
         if tool_name == "report_excel":
             from cad_pipeline.tools.report_tool import run_report_excel
 
@@ -486,12 +507,12 @@ Reply ONLY JSON:
         routed_tool_hint: str,
     ) -> dict[str, object]:
         """Plan execution with a single Pro-model orchestrator."""
-        tool_options = {"none", "search", "count", "area", "viz", "report_pdf", "report_excel"}
+        tool_options = {"none", "search", "count", "area", "viz", "report_pdf", "report_docx", "report_excel"}
         default_plan: dict[str, object] = {
             "grounding_mode": "uploaded_image" if has_image else "page_context",
             "preferred_tool": routed_tool_hint if routed_tool_hint in tool_options else "none",
             "use_history_shortcut": not has_image,
-            "force_page_level": routed_tool_hint in {"count", "area", "viz", "search", "report_pdf", "report_excel"},
+            "force_page_level": routed_tool_hint in {"count", "area", "viz", "search", "report_pdf", "report_docx", "report_excel"},
             "allow_folder_direct_answer": routed_tool_hint == "none",
             "allow_file_direct_answer": routed_tool_hint == "none",
             "allow_image_early_answer": has_image,
@@ -529,7 +550,7 @@ Inputs:
 Return ONLY JSON:
 {{
   "grounding_mode": "uploaded_image" | "page_context" | "hybrid",
-  "preferred_tool": "none" | "search" | "count" | "area" | "viz" | "report_pdf" | "report_excel",
+  "preferred_tool": "none" | "search" | "count" | "area" | "viz" | "report_pdf" | "report_docx" | "report_excel",
   "use_history_shortcut": true | false,
   "force_page_level": true | false,
   "allow_folder_direct_answer": true | false,
@@ -863,12 +884,12 @@ Return ONLY JSON:
         force_continue_page_level = False
         with traced_span("qa.detect_tool_intent", query=_trim(query, 240)) as tool_span:
             routed_tool = str(plan.get("preferred_tool") or "none")
-            if routed_tool not in {"none", "search", "count", "area", "viz", "report_pdf", "report_excel"}:
+            if routed_tool not in {"none", "search", "count", "area", "viz", "report_pdf", "report_docx", "report_excel"}:
                 routed_tool = classify_tool(query=query, image_bytes=effective_image_bytes).get("tool", "none")
             _set_attr(tool_span, "routed_tool", routed_tool)
             _set_attr(tool_span, "routed_tool_hint", routed_tool_hint)
             allow_history_shortcut = bool(plan.get("use_history_shortcut", False)) and (not effective_image_bytes)
-            if allow_history_shortcut and routed_tool in {"count", "area", "report_pdf", "report_excel"}:
+            if allow_history_shortcut and routed_tool in {"count", "area", "report_pdf", "report_docx", "report_excel"}:
                 _add_event(
                     tool_span,
                     "qa.tool_shortcut.history_attempt",
@@ -1070,7 +1091,7 @@ Return ONLY JSON:
                 except Exception as exc:
                     _set_attr(image_general_span, "error", _trim(str(exc), 180))
         force_page_level = bool(plan.get("force_page_level", False)) or (
-            routed_tool in {"count", "area", "viz", "search", "report_pdf", "report_excel"}
+            routed_tool in {"count", "area", "viz", "search", "report_pdf", "report_docx", "report_excel"}
         )
         if isinstance(flow_overrides.get("force_page_level"), bool):
             force_page_level = bool(flow_overrides["force_page_level"])

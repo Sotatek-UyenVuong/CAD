@@ -16,6 +16,7 @@ Tool routing (via agents/tool_router.py):
     area         → area_tool.run_area_tool    (+ Gemini Vision if image)
     viz          → viz_tool (existing)
     report_pdf   → report_tool.run_report_pdf
+    report_docx  → report_tool.run_report_docx
     report_excel → report_tool.run_report_excel
     none         → plain Q&A answer
 """
@@ -89,7 +90,7 @@ def _parse_reasoner_json(raw: str) -> dict:
     answer_match = re.search(r'"answer"\s*:\s*"((?:\\.|[^"\\])*)"', text, flags=re.S)
     pages_match = re.search(r'"pages_used"\s*:\s*\[([^\]]*)\]', text, flags=re.S)
     images_match = re.search(r'"images"\s*:\s*\[([^\]]*)\]', text, flags=re.S)
-    tool_match = re.search(r'"need_tool"\s*:\s*"(none|search|count|area|viz|report_pdf|report_excel)"', text)
+    tool_match = re.search(r'"need_tool"\s*:\s*"(none|search|count|area|viz|report_pdf|report_docx|report_excel)"', text)
 
     if answer_match:
         answer_raw = answer_match.group(1)
@@ -244,7 +245,7 @@ Reply ONLY as JSON:
   "answer": "<detailed answer in the same language as the question>",
   "pages_used": [<page_number>, ...],
   "images": ["<image_url if relevant>", ...],
-  "need_tool": "none" | "search" | "count" | "area" | "viz" | "report_pdf" | "report_excel"
+  "need_tool": "none" | "search" | "count" | "area" | "viz" | "report_pdf" | "report_docx" | "report_excel"
 }}"""
 
     try:
@@ -436,6 +437,30 @@ Reply ONLY as JSON:
                 else f"PDF作成エラー: {tool_result.get('error')}"
                 if lang_code == "ja"
                 else f"PDF generation error: {tool_result.get('error')}"
+            )
+
+    elif need_tool == "report_docx":
+        from cad_pipeline.tools.report_tool import run_report_docx
+        _pages_enriched = [
+            {**p, "file_name": p.get("file_name", p.get("file_id", ""))}
+            for p in used_pages
+        ]
+        tool_result = run_report_docx(query=query, pages=_pages_enriched, tool_result=None)
+        if tool_result.get("success"):
+            result["answer"] = (
+                f"Đã tạo báo cáo DOCX: **{tool_result['file_name']}**"
+                if lang_code == "vi"
+                else f"DOCXレポートを作成しました: **{tool_result['file_name']}**"
+                if lang_code == "ja"
+                else f"Generated DOCX report: **{tool_result['file_name']}**"
+            )
+        else:
+            result["answer"] = (
+                f"Lỗi tạo DOCX: {tool_result.get('error')}"
+                if lang_code == "vi"
+                else f"DOCX作成エラー: {tool_result.get('error')}"
+                if lang_code == "ja"
+                else f"DOCX generation error: {tool_result.get('error')}"
             )
 
     elif need_tool == "report_excel":

@@ -21,6 +21,8 @@ from __future__ import annotations
 import concurrent.futures
 import io
 import json
+import mimetypes
+import re
 import time
 from pathlib import Path
 
@@ -96,6 +98,30 @@ def marker_ocr_pdf(
     return results
 
 
+def marker_ocr_document(
+    file_path: Path,
+    langs: str = "ja,en",
+    mode: str = "fast",
+) -> dict[int, str]:
+    """OCR a non-PDF document via Marker and return {page_number: markdown}.
+
+    Used for DOC/DOCX/XLS/XLSX where Marker handles pagination/sheet splitting.
+    """
+    if not MARKER_API_KEY:
+        return {}
+
+    mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+    check_url = _submit_file(
+        file_name=file_path.name,
+        file_bytes=file_path.read_bytes(),
+        mime_type=mime_type,
+        langs=langs,
+        mode=mode,
+    )
+    data = _poll_until_done(check_url)
+    return _extract_pages(data, offset=0)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PDF chunking
 # ══════════════════════════════════════════════════════════════════════════════
@@ -133,6 +159,23 @@ def _split_into_chunks(pdf_path: Path, chunk_size: int) -> list[tuple[int, bytes
 
 def _submit_chunk(pdf_bytes: bytes, langs: str, mode: str) -> str:
     """POST a PDF chunk to Marker, return the check URL."""
+    return _submit_file(
+        file_name="chunk.pdf",
+        file_bytes=pdf_bytes,
+        mime_type="application/pdf",
+        langs=langs,
+        mode=mode,
+    )
+
+
+def _submit_file(
+    file_name: str,
+    file_bytes: bytes,
+    mime_type: str,
+    langs: str,
+    mode: str,
+) -> str:
+    """POST any file to Marker, return the check URL."""
     headers = {"X-API-Key": MARKER_API_KEY}
     payload = {
         "langs": langs,
@@ -148,7 +191,7 @@ def _submit_chunk(pdf_bytes: bytes, langs: str, mode: str) -> str:
     resp = requests.post(
         MARKER_API_URL,
         data=payload,
-        files={"file": ("chunk.pdf", pdf_bytes, "application/pdf")},
+        files={"file": (file_name, file_bytes, mime_type)},
         headers=headers,
         timeout=120,
     )
@@ -204,6 +247,13 @@ def _extract_pages(data: dict, offset: int) -> dict[int, str]:
             result[original_page] = _page_obj_to_markdown(page_obj)
         return result
 
+    # ── Excel/office JSON tree fallback (children/page/html) ────────────────
+    json_obj = data.get("json")
+    if isinstance(json_obj, dict):
+        tree_pages = _extract_pages_from_json_tree(json_obj, offset=offset)
+        if tree_pages:
+            return tree_pages
+
     # ── Fallback: parse paginated markdown ───────────────────────────────────
     markdown = (data.get("markdown") or "").strip()
     if not markdown:
@@ -240,3 +290,55 @@ def _split_markdown_pages(markdown: str) -> list[str]:
 
     parts = [p.strip() for p in markdown.split("\n---\n") if p.strip()]
     return parts if parts else [markdown]
+
+
+def _extract_pages_from_json_tree(node: object, offset: int) -> dict[int, str]:
+    """Extract {page_number: text} from Marker json children tree.
+
+    Some office formats (e.g. XLSX) return content in nested nodes with:
+    - page (0-based)
+    - html/text/markdown fields
+    """
+    from collections import defaultdict
+
+    by_page: dict[int, list[str]] = defaultdict(list)
+
+    def walk(obj: object) -> None:
+        if isinstance(obj, dict):
+            page = obj.get("page")
+            text_piece = _node_to_text_piece(obj)
+            if isinstance(page, int) and text_piece:
+                by_page[page].append(text_piece)
+            children = obj.get("children")
+            if isinstance(children, list):
+                for child in children:
+                    walk(child)
+            return
+        if isinstance(obj, list):
+            for child in obj:
+                walk(child)
+
+    walk(node)
+    out: dict[int, str] = {}
+    for local_page, chunks in by_page.items():
+        merged = "\n\n".join(c for c in chunks if c)
+        if not merged.strip():
+            continue
+        out[offset + int(local_page) + 1] = merged.strip()
+    return out
+
+
+def _node_to_text_piece(node: dict) -> str:
+    markdown = node.get("markdown")
+    if isinstance(markdown, str) and markdown.strip():
+        return markdown.strip()
+    text = node.get("text")
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    html = node.get("html")
+    if isinstance(html, str) and html.strip():
+        # Keep content readable for downstream summary/indexing.
+        plain = re.sub(r"<[^>]+>", " ", html)
+        plain = re.sub(r"\s+", " ", plain).strip()
+        return plain or html.strip()
+    return ""

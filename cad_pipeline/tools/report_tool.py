@@ -1,10 +1,17 @@
-"""report_tool.py — Generate PDF or Excel reports from chat context.
+"""report_tool.py — Generate PDF, DOCX, or Excel reports from chat context.
 
 Flow (PDF):
   context_md pages + query + tool_result
     → Gemini Flash: draft structured Markdown report
     → write .md temp file
     → md_export.convert_to_pdf  (Pandoc + xelatex)
+    → return {format, file_path, file_name, markdown}
+
+Flow (DOCX):
+  context_md pages + query + tool_result
+    → Gemini Flash: draft structured Markdown report
+    → write .md temp file
+    → md_export.convert_to_docx (Pandoc)
     → return {format, file_path, file_name, markdown}
 
 Flow (Excel):
@@ -166,6 +173,63 @@ def run_report_pdf(
         "markdown":  markdown,
         "success":   False,
         "error":     "PDF conversion failed; Markdown source available.",
+    }
+
+
+def run_report_docx(
+    query: str,
+    pages: list[dict],
+    tool_result: dict | None = None,
+    output_dir: str | Path | None = None,
+    title: str | None = None,
+    model: str | None = None,
+) -> dict:
+    """Generate a DOCX report from context pages and tool result."""
+    from cad_pipeline.tools.md_export import convert_to_docx
+
+    markdown = _build_report_markdown(query, pages, tool_result, model=model)
+
+    _title = title or f"CAD Report — {query[:60]}"
+    _date = datetime.now().strftime("%Y-%m-%d")
+    _out_dir = Path(output_dir) if output_dir else REPORTS_DIR
+    _out_dir.mkdir(parents=True, exist_ok=True)
+
+    slug = re.sub(r"[^\w\-]", "_", query[:40]).strip("_")
+    uniq = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
+    md_path = _out_dir / f"report_{slug}_{uniq}.md"
+    docx_path = _out_dir / f"report_{slug}_{uniq}.docx"
+
+    md_path.write_text(markdown, encoding="utf-8")
+    template_dir = Path(__file__).resolve().parent / "templates"
+    reference_doc = template_dir / "cad_report_template.docx"
+    success = convert_to_docx(
+        md_path=md_path,
+        out_path=docx_path,
+        title=_title,
+        author="CAD Pipeline",
+        date=_date,
+        toc=False,
+        reference_doc=reference_doc,
+    )
+
+    if success and docx_path.exists():
+        md_path.unlink(missing_ok=True)
+        return {
+            "format": "docx",
+            "file_path": str(docx_path),
+            "file_name": docx_path.name,
+            "markdown": markdown,
+            "success": True,
+            "error": None,
+        }
+
+    return {
+        "format": "docx",
+        "file_path": str(md_path),
+        "file_name": md_path.name,
+        "markdown": markdown,
+        "success": False,
+        "error": "DOCX conversion failed; Markdown source available.",
     }
 
 

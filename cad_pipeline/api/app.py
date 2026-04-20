@@ -95,7 +95,7 @@ _REPORTS_DIR = REPORTS_DIR
 def _attach_report_download_url(result: dict) -> dict:
     """If tool_result has generated report file, expose stable download_url."""
     tool = result.get("tool_result") or {}
-    if tool.get("format") not in ("pdf", "excel"):
+    if tool.get("format") not in ("pdf", "excel", "docx"):
         return result
     if not tool.get("file_path"):
         return result
@@ -130,6 +130,21 @@ def _sse_event(event: str, data: dict) -> str:
 
 _upload_status: dict[str, dict] = {}
 _qa_jobs: dict[str, dict] = {}
+_ALLOWED_UPLOAD_EXTS = {
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".gif",
+    ".bmp",
+    ".tif",
+    ".tiff",
+}
 
 
 # ── Health ─────────────────────────────────────────────────────────────────
@@ -156,12 +171,19 @@ async def upload_file(
     file_id: str = Form(None),
     _user: dict = Depends(require_role("viewer", "user", "editor", "admin")),
 ):
-    """Upload a PDF or image file to index into the pipeline."""
+    """Upload a supported file to index into the pipeline."""
     job_id = str(uuid.uuid4())
     fid = file_id or str(uuid.uuid4())[:8]
+    filename = file.filename or "upload.bin"
+    suffix = Path(filename).suffix.lower()
+    if suffix not in _ALLOWED_UPLOAD_EXTS:
+        allowed = ", ".join(sorted(_ALLOWED_UPLOAD_EXTS))
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported file type '{suffix or 'unknown'}'. Supported: {allowed}",
+        )
 
     # Save upload to temp file
-    suffix = Path(file.filename or "upload.pdf").suffix
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     content = await file.read()
     tmp.write(content)

@@ -10,6 +10,7 @@ count        Count symbols, elements, or objects (text or visual).
 area         Calculate floor area or room size (text or visual).
 viz          Visualize / highlight elements on a drawing page.
 report_pdf   Generate a structured PDF report from the current context.
+report_docx  Generate a structured DOCX report from the current context.
 report_excel Generate an Excel spreadsheet from the current context.
 none         General Q&A — no specialist tool needed.
 """
@@ -33,6 +34,7 @@ Available tools:
   area         — calculate floor area or room sizes
   viz          — visualize or highlight elements on a drawing page
   report_pdf   — generate a structured PDF report from current context
+  report_docx  — generate a structured DOCX report from current context
   report_excel — generate an Excel spreadsheet from current context
   none         — general text Q&A (no specialist tool needed)
 
@@ -41,6 +43,7 @@ Rules:
 - If query asks "how many pages/drawings/files/documents/lists" (metadata counting) → "none"
 - If query mentions counting symbols/equipment/objects in drawing content → "count"
 - If query mentions area/m²/diện tích → "area"  
+- If query mentions DOCX/DOC/Word/report .docx → "report_docx"
 - If query mentions PDF/báo cáo/report → "report_pdf"
 - If query mentions Excel/spreadsheet/bảng tính (including typo like "excell") → "report_excel"
 - If query asks to visualize/highlight → "viz"
@@ -73,6 +76,12 @@ def classify_tool(
     # "How many documents/pages/drawings" is metadata counting, not symbol counting.
     if query:
         q = query.lower()
+        if any(k in q for k in ["docx", "word", ".docx", "báo cáo word", "bao cao word"]):
+            return {
+                "tool": "report_docx",
+                "reason": "Explicit DOCX/Word export request.",
+                "source": "default",
+            }
         wants_count = any(k in q for k in ["bao nhiêu", "how many", "何個", "いくつ", "số lượng"])
         metadata_targets = [
             "bảng vẽ", "ban ve", "drawing", "drawings", "sheet", "sheets",
@@ -110,7 +119,7 @@ def classify_tool(
         parsed = json.loads(raw)
         tool = parsed.get("tool", "none")
         # Validate
-        valid = {"search", "count", "area", "viz", "report_pdf", "report_excel", "none"}
+        valid = {"search", "count", "area", "viz", "report_pdf", "report_docx", "report_excel", "none"}
         if tool not in valid:
             tool = "none"
         return {"tool": tool, "reason": parsed.get("reason", ""), "source": "gemini"}
