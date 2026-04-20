@@ -149,10 +149,23 @@ def run_qa(
             assistant_image_url = str(tool_result.get("image_url") or "").strip()
         if not assistant_image_url and images:
             assistant_image_url = str(images[0] or "").strip()
+        download_url = ""
+        if isinstance(tool_result, dict):
+            explicit_url = str(tool_result.get("download_url") or "").strip()
+            if explicit_url:
+                download_url = explicit_url
+            else:
+                report_format = str(tool_result.get("format") or "").strip().lower()
+                report_path = str(tool_result.get("file_path") or "").strip()
+                if report_format in {"pdf", "excel"} and report_path:
+                    report_name = Path(report_path).name
+                    if report_name:
+                        download_url = f"/reports/{report_name}"
         user_meta = {"image_url": user_image_url} if user_image_url else {}
         assistant_meta = {
             "citations": citations or [],
             "image_url": assistant_image_url,
+            "download_url": download_url,
             "source_file": source_file or "",
         }
         mongo.append_chat_turn(

@@ -474,6 +474,24 @@ API_BASE_URL=https://your-domain.com   # domain thật khi deploy
 
 ---
 
+## Git push note (SSH key)
+
+Repo này đang dùng GitHub SSH. Nếu môi trường tự nhận sai account (ví dụ báo `denied to hungdang97`), dùng explicit key để push:
+
+```bash
+# Push submodule trước
+GIT_SSH_COMMAND='ssh -i "/mnt/data8tb/notex/.ssh/id_ed25519" -o IdentitiesOnly=yes' \
+git -C "Chatbotsysteminterface" push origin main
+
+# Push repo chính sau
+GIT_SSH_COMMAND='ssh -i "/mnt/data8tb/notex/.ssh/id_ed25519" -o IdentitiesOnly=yes' \
+git push origin main
+```
+
+Thứ tự push chuẩn: **submodule trước, parent repo sau** để commit pointer luôn hợp lệ.
+
+---
+
 ## Reuse từ parent project
 
 | Component | Path trong parent |
