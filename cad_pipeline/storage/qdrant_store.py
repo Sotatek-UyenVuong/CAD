@@ -20,7 +20,6 @@ from qdrant_client.models import (  # type: ignore
     Filter,
     FieldCondition,
     MatchValue,
-    ScoredPoint,
 )
 
 from cad_pipeline.config import (
@@ -58,6 +57,25 @@ def _ensure_collection(client: QdrantClient) -> None:
 def _page_id_to_int(page_id: str) -> int:
     digest = hashlib.md5(page_id.encode()).digest()
     return struct.unpack("<Q", digest[:8])[0]
+
+
+def _resolve_query_points_response(raw: Any) -> list[Any]:
+    """Normalize qdrant query response across client versions."""
+    if isinstance(raw, list):
+        return raw
+    points = getattr(raw, "points", None)
+    if isinstance(points, list):
+        return points
+    result = getattr(raw, "result", None)
+    if isinstance(result, list):
+        return result
+    return []
+
+
+def _extract_payload_value(payload: Any, key: str, default: Any = None) -> Any:
+    if isinstance(payload, dict):
+        return payload.get(key, default)
+    return getattr(payload, key, default)
 
 
 def upsert_page_vector(
@@ -118,22 +136,34 @@ def search_pages(
 
     query_filter = Filter(must=filter_conditions) if filter_conditions else None
 
-    results: list[ScoredPoint] = client.search(
-        collection_name=QDRANT_COLLECTION,
-        query_vector=query_vector,
-        limit=top_k,
-        query_filter=query_filter,
-        with_payload=True,
-    )
+    if hasattr(client, "search"):
+        results: list[Any] = client.search(
+            collection_name=QDRANT_COLLECTION,
+            query_vector=query_vector,
+            limit=top_k,
+            query_filter=query_filter,
+            with_payload=True,
+        )
+    elif hasattr(client, "query_points"):
+        raw = client.query_points(
+            collection_name=QDRANT_COLLECTION,
+            query=query_vector,
+            limit=top_k,
+            query_filter=query_filter,
+            with_payload=True,
+        )
+        results = _resolve_query_points_response(raw)
+    else:
+        raise AttributeError("QdrantClient does not support search/query_points")
 
     return [
         {
-            "page_id": r.payload["page_id"],
-            "file_id": r.payload["file_id"],
-            "folder_id": r.payload["folder_id"],
-            "page_number": r.payload["page_number"],
-            "short_summary": r.payload.get("short_summary", ""),
-            "score": r.score,
+            "page_id": _extract_payload_value(getattr(r, "payload", {}), "page_id", ""),
+            "file_id": _extract_payload_value(getattr(r, "payload", {}), "file_id", ""),
+            "folder_id": _extract_payload_value(getattr(r, "payload", {}), "folder_id", ""),
+            "page_number": _extract_payload_value(getattr(r, "payload", {}), "page_number", 0),
+            "short_summary": _extract_payload_value(getattr(r, "payload", {}), "short_summary", ""),
+            "score": getattr(r, "score", 0.0),
         }
         for r in results
     ]

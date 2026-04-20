@@ -86,6 +86,145 @@ def run_qa(
     def _msg(vi: str, ja: str, en: str) -> str:
         return vi if lang == "vi" else ja if lang == "ja" else en
 
+    def _history_context(turns: list[dict], limit: int = 5) -> str:
+        lines: list[str] = []
+        for t in turns[-limit:]:
+            lines.append(f"User: {t.get('role_user', '')}")
+            lines.append(f"Assistant: {t.get('role_assistant', '')}")
+        return "\n".join(lines)
+
+    def _run_tool_from_history(
+        tool_name: str,
+        query_text: str,
+        turns: list[dict],
+    ) -> dict | None:
+        """Try tool execution directly from chat history context.
+
+        Returns a full run_qa-compatible response dict on success, else None.
+        """
+        if not turns:
+            return None
+
+        context_text = _history_context(turns)
+        if not context_text.strip():
+            return None
+
+        if tool_name == "count":
+            from cad_pipeline.tools.count_tool import run_count_tool
+
+            tool_result = run_count_tool(query=query_text, context_md=context_text)
+            count_value = tool_result.get("count")
+            confidence = str(tool_result.get("confidence", "")).lower()
+            if count_value is None:
+                return None
+            try:
+                count_num = int(count_value)
+            except Exception:
+                count_num = 0
+            # History shortcut should only short-circuit when we have a positive,
+            # usable count. Zero/uncertain values must continue to page-level lookup.
+            if count_num <= 0:
+                return None
+            if confidence == "low":
+                return None
+            answer = _msg(
+                f"Kết quả đếm từ ngữ cảnh hội thoại: {count_value}. {tool_result.get('details', '')}",
+                f"会話コンテキストからのカウント結果: {count_value}。{tool_result.get('details', '')}",
+                f"Count result from chat context: {count_value}. {tool_result.get('details', '')}",
+            )
+            return {
+                "answer": answer,
+                "pages_used": [],
+                "citations": [],
+                "images": [],
+                "tool_result": tool_result,
+                "source_file": "chat_history",
+                "query_type": "qa",
+            }
+
+        if tool_name == "area":
+            from cad_pipeline.tools.area_tool import run_area_tool
+
+            tool_result = run_area_tool(query=query_text, context_md=context_text)
+            area_value = tool_result.get("area")
+            if area_value in (None, "", "unknown"):
+                area_value = tool_result.get("total_m2")
+            if area_value in (None, "", "unknown"):
+                return None
+            answer = _msg(
+                f"Kết quả diện tích từ ngữ cảnh hội thoại: {area_value} {tool_result.get('unit', 'm²')}. {tool_result.get('details', '')}",
+                f"会話コンテキストからの面積結果: {area_value} {tool_result.get('unit', 'm²')}。{tool_result.get('details', '')}",
+                f"Area result from chat context: {area_value} {tool_result.get('unit', 'm²')}. {tool_result.get('details', '')}",
+            )
+            return {
+                "answer": answer,
+                "pages_used": [],
+                "citations": [],
+                "images": [],
+                "tool_result": tool_result,
+                "source_file": "chat_history",
+                "query_type": "qa",
+            }
+
+        pages_like = [
+            {
+                "page_number": 0,
+                "file_name": "chat_history",
+                "short_summary": "Conversation-derived context",
+                "context_md": context_text,
+            }
+        ]
+
+        if tool_name == "report_pdf":
+            from cad_pipeline.tools.report_tool import run_report_pdf
+
+            tool_result = run_report_pdf(query=query_text, pages=pages_like, tool_result=None)
+            if not tool_result.get("file_path"):
+                return None
+            answer = _msg(
+                f"Đã tạo báo cáo PDF từ ngữ cảnh hội thoại: **{tool_result.get('file_name', '')}**",
+                f"会話コンテキストからPDFレポートを作成しました: **{tool_result.get('file_name', '')}**",
+                f"Generated PDF report from chat context: **{tool_result.get('file_name', '')}**",
+            )
+            return {
+                "answer": answer,
+                "pages_used": [],
+                "citations": [],
+                "images": [],
+                "tool_result": tool_result,
+                "source_file": "chat_history",
+                "query_type": "qa",
+            }
+
+        if tool_name == "report_excel":
+            from cad_pipeline.tools.report_tool import run_report_excel
+
+            tool_result = run_report_excel(
+                query=query_text,
+                pages=pages_like,
+                tool_result=None,
+                answer_text=(turns[-1].get("role_assistant", "") if turns else ""),
+                chat_history=turns,
+            )
+            if not tool_result.get("file_path"):
+                return None
+            answer = _msg(
+                f"Đã tạo file Excel từ ngữ cảnh hội thoại: **{tool_result.get('file_name', '')}**",
+                f"会話コンテキストからExcelファイルを作成しました: **{tool_result.get('file_name', '')}**",
+                f"Generated Excel file from chat context: **{tool_result.get('file_name', '')}**",
+            )
+            return {
+                "answer": answer,
+                "pages_used": [],
+                "citations": [],
+                "images": [],
+                "tool_result": tool_result,
+                "source_file": "chat_history",
+                "query_type": "qa",
+            }
+
+        return None
+
     with traced_span(
         "qa.run",
         query=_trim(query, 300),
@@ -108,6 +247,17 @@ def run_qa(
         with traced_span("qa.detect_tool_intent", query=_trim(query, 240)) as tool_span:
             routed_tool = classify_tool(query=query, image_bytes=image_bytes).get("tool", "none")
             _set_attr(tool_span, "routed_tool", routed_tool)
+            if routed_tool in {"count", "area", "report_pdf", "report_excel"}:
+                shortcut = _run_tool_from_history(routed_tool, query, chat_history)
+                if shortcut is not None:
+                    _add_event(
+                        tool_span,
+                        "qa.tool_shortcut.history",
+                        {"tool": routed_tool, "source": "chat_history"},
+                    )
+                    if save_history and shortcut.get("answer"):
+                        mongo.append_chat_turn(folder_id, query, str(shortcut["answer"]), user_email=user_email)
+                    return shortcut
         force_page_level = routed_tool in {"count", "area", "viz", "search", "report_pdf", "report_excel"}
         _set_attr(root_span, "routed_tool", routed_tool)
         _set_attr(root_span, "force_page_level", force_page_level)
@@ -221,6 +371,7 @@ def run_qa(
                 file_detailed_summary = str(file_doc.get("summary") or "")
                 _set_attr(file_loop_span, "file_short_summary_preview", _trim(file_short_summary, 180))
                 _set_attr(file_loop_span, "file_summary_preview", _trim(file_detailed_summary, 220))
+                candidate_pages_from_file: list[int] = []
                 if not force_page_level:
                     with traced_span("qa.file_agent", file_id=fid, file_name=source_file_name, query=_trim(query, 180)) as file_agent_span:
                         file_result = run_file_agent(
@@ -231,7 +382,7 @@ def run_qa(
                             file_summary=file_detailed_summary,
                         )
                         _set_attr(file_agent_span, "action", str(file_result.get("action", "")))
-                        _set_attr(file_agent_span, "page_candidates_count", len(file_result.get("page_numbers", []) or []))
+                        _set_attr(file_agent_span, "page_candidates_count", len(file_result.get("candidate_pages", []) or []))
                         _set_attr(file_agent_span, "answer_preview", _trim(str(file_result.get("answer", "")), 180))
                     if file_result.get("action") == "answer" and file_result.get("answer"):
                         answer = file_result["answer"]
@@ -245,6 +396,14 @@ def run_qa(
                             "source_file": source_file_name,
                             "query_type": "qa",
                         }
+                    candidate_pages_raw = file_result.get("candidate_pages", []) or []
+                    candidate_pages_from_file = sorted(
+                        {
+                            int(p)
+                            for p in candidate_pages_raw
+                            if isinstance(p, int) and p > 0
+                        }
+                    )
                 else:
                     _add_event(
                         file_loop_span,
@@ -263,8 +422,37 @@ def run_qa(
                             "short_summary": 1,
                             "dxf_path": 1,
                         },
+                        page_numbers=candidate_pages_from_file or None,
                     )
                     _set_attr(pages_span, "pages_loaded_count", len(pages))
+                    _set_attr(pages_span, "candidate_pages_count", len(candidate_pages_from_file))
+                    _set_attr(
+                        pages_span,
+                        "candidate_pages_preview",
+                        ",".join(str(p) for p in candidate_pages_from_file[:12]),
+                    )
+                    if candidate_pages_from_file and not pages:
+                        _add_event(
+                            pages_span,
+                            "qa.candidate_pages.empty_fallback_all",
+                            {
+                                "file_id": fid,
+                                "candidate_pages": ",".join(str(p) for p in candidate_pages_from_file[:20]),
+                            },
+                        )
+                        pages = mongo.get_pages_by_file(
+                            fid,
+                            projection={
+                                "_id": 1,
+                                "file_id": 1,
+                                "page_number": 1,
+                                "context_md": 1,
+                                "image_url": 1,
+                                "short_summary": 1,
+                                "dxf_path": 1,
+                            },
+                        )
+                        _set_attr(pages_span, "pages_loaded_count_after_fallback", len(pages))
                 for p in pages:
                     p["page_id"] = str(p.pop("_id", p.get("page_id", "")))
                     p["file_id"] = p.get("file_id", fid)

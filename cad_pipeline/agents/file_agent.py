@@ -26,7 +26,12 @@ def run_file_agent(
         file_summary: Detailed file-level summary (aggregated from pages).
 
     Returns:
-        {"action": "answer"|"go_to_page", "answer": str, "reason": str}
+        {
+          "action": "answer"|"go_to_page",
+          "answer": str,
+          "reason": str,
+          "candidate_pages": list[int]
+        }
     """
     from google import genai  # type: ignore
 
@@ -56,13 +61,17 @@ Rules:
 - For ANY question about specific numbers, counts, technical specs, detailed content, drawings, measurements → ALWAYS escalate (go_to_page)
 - Do NOT infer or guess — if uncertain, escalate
 - The summary is an overview only; detailed answers require page-level reading
+- If action is "go_to_page", "candidate_pages" MUST contain the most likely page numbers (up to 8).
+- candidate_pages must be explicit integers in ascending order (example: [3, 7, 12]).
+- If no reliable page candidates are visible from summary, return [].
 - The "answer" field MUST be written in {lang} only.
 
 Reply ONLY as JSON:
 {{
   "action": "answer" or "go_to_page",
   "answer": "<answer text, empty if go_to_page>",
-  "reason": "<brief explanation>"
+  "reason": "<brief explanation>",
+  "candidate_pages": [<int>, ...]
 }}"""
 
     try:
@@ -73,10 +82,41 @@ Reply ONLY as JSON:
         raw = response.text.strip()
         raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
         result = json.loads(raw)
-        return result
+        if not isinstance(result, dict):
+            raise ValueError("Invalid file agent result format")
+
+        action = str(result.get("action", "go_to_page"))
+        answer = str(result.get("answer", ""))
+        reason = str(result.get("reason", ""))
+
+        candidate_pages_raw = result.get("candidate_pages", [])
+        candidate_pages: list[int] = []
+        if isinstance(candidate_pages_raw, list):
+            seen: set[int] = set()
+            for item in candidate_pages_raw:
+                try:
+                    page_no = int(item)
+                except (TypeError, ValueError):
+                    continue
+                if page_no <= 0 or page_no in seen:
+                    continue
+                seen.add(page_no)
+                candidate_pages.append(page_no)
+        candidate_pages.sort()
+
+        if action == "answer":
+            candidate_pages = []
+
+        return {
+            "action": action,
+            "answer": answer,
+            "reason": reason,
+            "candidate_pages": candidate_pages,
+        }
     except Exception as exc:
         return {
             "action": "go_to_page",
             "answer": "",
             "reason": f"Agent error: {exc}",
+            "candidate_pages": [],
         }

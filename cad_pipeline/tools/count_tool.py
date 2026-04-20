@@ -669,21 +669,92 @@ Reply ONLY as JSON:
         }
 
 
+def count_in_context_md(
+    query: str,
+    context_md: str,
+) -> dict:
+    """Fallback count from page markdown context using Gemini Flash."""
+    from google import genai  # type: ignore
+
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    prompt = f"""You are counting symbols/entities from CAD page markdown context.
+
+User query: "{query}"
+
+Page context:
+---
+{context_md}
+---
+
+Task:
+- Determine the best count answer for the query using ONLY the context text above.
+- If the context does not contain enough information, return count=0 and explain briefly.
+- Do not hallucinate values.
+
+Reply ONLY as JSON:
+{{
+  "count": <integer>,
+  "details": "<brief explanation>",
+  "confidence": "high" | "medium" | "low"
+}}"""
+
+    try:
+        response = client.models.generate_content(
+            model=GEMINI_FLASH_MODEL,
+            contents=prompt,
+        )
+        raw = response.text.strip()
+        raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
+        parsed = json.loads(raw)
+        count = parsed.get("count", 0)
+        if not isinstance(count, int):
+            try:
+                count = int(count)
+            except Exception:
+                count = 0
+        details = str(parsed.get("details", ""))
+        confidence = str(parsed.get("confidence", "low"))
+        if confidence not in {"high", "medium", "low"}:
+            confidence = "low"
+        return {
+            "count": max(count, 0),
+            "query": query,
+            "details": details or "Counted from page context.",
+            "confidence": confidence,
+            "mode": "context_md",
+        }
+    except Exception as exc:
+        return {
+            "count": 0,
+            "query": query,
+            "details": f"Error: {exc}",
+            "confidence": "low",
+            "mode": "context_md",
+        }
+
+
 def run_count_tool(
     query: str,
     dxf_path: str | Path | None = None,
     image_path: str | Path | None = None,
+    context_md: str | None = None,
+    use_symbol_db: bool = True,
 ) -> dict:
     """Main entry point cho count tool."""
+    _ = use_symbol_db  # Backward-compatible argument; current DXF flow always uses symbol DB first.
+
     if dxf_path and Path(dxf_path).exists():
         return count_in_dxf(dxf_path, query)
 
     if image_path and Path(image_path).exists():
         return count_in_image(image_path, query)
 
+    if context_md and context_md.strip():
+        return count_in_context_md(query, context_md)
+
     return {
         "count": 0,
         "query": query,
-        "details": "Cần cung cấp dxf_path hoặc image_path để đếm.",
+        "details": "Cần cung cấp dxf_path, image_path hoặc context_md để đếm.",
         "mode": "none",
     }

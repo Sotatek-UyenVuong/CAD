@@ -447,11 +447,20 @@ def get_page(page_id: str) -> dict | None:
 def get_pages_by_file(
     file_id: str,
     projection: dict | None = None,
+    page_numbers: list[int] | None = None,
 ) -> list[dict]:
     proj = projection or {"context_md": 1, "page_number": 1, "image_url": 1, "short_summary": 1, "dxf_path": 1}
+    query: dict = {"file_id": file_id}
+    if page_numbers:
+        normalized_pages: list[int] = []
+        for p in page_numbers:
+            if isinstance(p, int) and p > 0:
+                normalized_pages.append(p)
+        if normalized_pages:
+            query["page_number"] = {"$in": sorted(set(normalized_pages))}
     return list(
         get_db()["pages"]
-        .find({"file_id": file_id}, proj)
+        .find(query, proj)
         .sort("page_number", ASCENDING)
     )
 

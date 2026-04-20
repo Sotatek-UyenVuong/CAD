@@ -303,23 +303,29 @@ count_result (có "positions")
 
 ### 7. Chatbot pipeline (Q&A)
 ```
-User query + folder_id
+User query + session_id (khuyến nghị) / folder_id (backward-compatible)
   → Load chat history (5 turns gần nhất từ MongoDB chat_history)
+  → Nếu có session_id:
+      lấy session_file_ids từ chat_sessions.file_ids làm scope chuẩn
+      (cho phép file khác folder trong cùng 1 session)
   → Router (Gemini 2.5 Flash): keyword match → "qa" | "search"
       qa:
+        → Tool shortcut từ chat history (không cần đọc lại page):
+            · Áp dụng cho count/area/report_pdf/report_excel khi history đã đủ dữ kiện
+            · Nếu kết quả count=0 hoặc confidence thấp → KHÔNG trả thẳng, fallback xuống page-level
         → Folder Agent (Gemini 2.5 Flash)
-            · Input: folders.summary + file short_summary list
+            · Input: list file.short_summary trong session scope
             · Chỉ answer nếu là câu hỏi overview rất chung chung
             · "answer" → save history, trả thẳng
             · "go_to_file" → chọn ≤3 files
         → File Agent (Gemini 2.5 Flash) × N files
-            · Input: files.summary (full)
+            · Input: query + files.summary (full)
             · Chỉ answer nếu summary có thông tin CỤ THỂ, còn lại escalate
             · "answer" → save history, trả thẳng
-            · "go_to_page" → load all pages
+            · "go_to_page" → trả candidate_pages (page_number list) để load hẹp
         → Page Agent — 2 stage:
             ┌─ Stage 1: Page Selector (Gemini 2.5 Flash)
-            │   · Input: short_summary của ≤25 pages + chat history
+            │   · Input: short_summary của page pool đã lọc (candidate_pages)
             │   · Output: top 5 page numbers liên quan nhất
             └─ Stage 2: Page Reasoner (Gemini 3.1 Pro)
                 · Input: FULL context_md của ≤5 pages đã chọn (không cắt)
@@ -349,15 +355,16 @@ User query + folder_id
 **Chat history (MongoDB collection `chat_history`):**
 ```
 {
-  _id: folder_id,
+  _id: session_id_or_folder_id,
   turns: [                    // $slice=-5 → chỉ giữ 5 turns gần nhất
     { role_user: "...", role_assistant: "...", ts: ISODate },
     ...
   ]
 }
 ```
-- Mỗi folder có 1 chat session (theo `folder_id`)
+- Ưu tiên 1 chat history cho mỗi `session_id`; fallback theo `folder_id` nếu không dùng session
 - Chatbot nhớ ngữ cảnh 5 câu hỏi trước để trả lời follow-up
+- Tool shortcut ưu tiên reuse dữ kiện từ history cho các câu hỏi follow-up để giảm số bước agent
 - Page Selector và Page Reasoner đều nhận chat history để duy trì context
 
 ### 8. File/Folder management (delete_pipeline.py)
