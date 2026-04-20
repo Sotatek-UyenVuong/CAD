@@ -260,7 +260,8 @@ count_result (có "positions")
 ### 5. Area tool logic
 ```
   ├── có unit_label → tra unit_room_catalog.json (tatami → m²)
-  └── không có → Gemini Flash extract từ context_md
+  ├── có image_path  → Gemini Pro Vision extract trực tiếp từ ảnh upload
+  └── còn lại        → Gemini Flash extract từ context_md
 ```
 
 ### 6. Upload pipeline (9 bước)
@@ -310,8 +311,14 @@ User query + session_id (khuyến nghị) / folder_id (backward-compatible)
       (cho phép file khác folder trong cùng 1 session)
   → Router (Gemini 2.5 Flash): keyword match → "qa" | "search"
       qa:
+        → Nếu turn có ảnh upload:
+            · Chạy "image scope decision" (Gemini Flash) dựa trên ngữ nghĩa query + chat history
+            · Quyết định `use_uploaded_image=true|false` (không dùng keyword hard-code)
+            · true  → ưu tiên flow ảnh upload
+            · false → bỏ ảnh cho turn hiện tại, quay về page/file flow bình thường
         → Tool shortcut từ chat history (không cần đọc lại page):
             · Áp dụng cho count/area/report_pdf/report_excel khi history đã đủ dữ kiện
+            · Chỉ chạy khi turn hiện tại không dùng uploaded image
             · Nếu kết quả count=0 hoặc confidence thấp → KHÔNG trả thẳng, fallback xuống page-level
         → Folder Agent (Gemini 2.5 Flash)
             · Input: list file.short_summary trong session scope
@@ -334,8 +341,12 @@ User query + session_id (khuyến nghị) / folder_id (backward-compatible)
                 · need_tool detect: keyword match (優先) + Pro output
         → Tool (nếu cần):
             · count → count_tool (DXF exact / Gemini Pro Vision)
-            · area  → area_tool  (catalog / Gemini 2.5 Flash)
+            · area  → area_tool  (catalog / Gemini Pro Vision / Gemini 2.5 Flash)
             · viz   → viz_tool   (vẽ boxes lên ảnh trang)
+        → Image-first hard guards (khi `use_uploaded_image=true`):
+            · routed_tool=count → chạy count trực tiếp trên ảnh upload, không đi page-level
+            · routed_tool=area  → chạy area trực tiếp trên ảnh upload, không đi page-level
+            · routed_tool=none  → chạy general vision QA trực tiếp trên ảnh upload
         → Save turn → MongoDB chat_history (giữ 5 turns gần nhất, $slice=-5)
       search:
         → chuyển sang Search pipeline (xem mục 9)

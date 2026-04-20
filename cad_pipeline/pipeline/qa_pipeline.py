@@ -7,6 +7,9 @@ Usage:
 
 from __future__ import annotations
 
+import json
+import tempfile
+from pathlib import Path
 from collections.abc import Callable
 
 from cad_pipeline.agents.router import classify_query
@@ -93,6 +96,14 @@ def run_qa(
             lines.append(f"Assistant: {t.get('role_assistant', '')}")
         return "\n".join(lines)
 
+    def _history_debug(turns: list[dict], limit: int = 5) -> dict[str, object]:
+        scoped = turns[-limit:]
+        payload: dict[str, object] = {"history_turns": len(scoped)}
+        for i, turn in enumerate(scoped, start=1):
+            payload[f"turn_{i}_user"] = _trim(str(turn.get("role_user", "")), 180)
+            payload[f"turn_{i}_assistant"] = _trim(str(turn.get("role_assistant", "")), 180)
+        return payload
+
     def _run_tool_from_history(
         tool_name: str,
         query_text: str,
@@ -127,11 +138,7 @@ def run_qa(
                 return None
             if confidence == "low":
                 return None
-            answer = _msg(
-                f"Kết quả đếm từ ngữ cảnh hội thoại: {count_value}. {tool_result.get('details', '')}",
-                f"会話コンテキストからのカウント結果: {count_value}。{tool_result.get('details', '')}",
-                f"Count result from chat context: {count_value}. {tool_result.get('details', '')}",
-            )
+            answer = str(tool_result.get("details") or "").strip() or str(count_value)
             return {
                 "answer": answer,
                 "pages_used": [],
@@ -151,11 +158,7 @@ def run_qa(
                 area_value = tool_result.get("total_m2")
             if area_value in (None, "", "unknown"):
                 return None
-            answer = _msg(
-                f"Kết quả diện tích từ ngữ cảnh hội thoại: {area_value} {tool_result.get('unit', 'm²')}. {tool_result.get('details', '')}",
-                f"会話コンテキストからの面積結果: {area_value} {tool_result.get('unit', 'm²')}。{tool_result.get('details', '')}",
-                f"Area result from chat context: {area_value} {tool_result.get('unit', 'm²')}. {tool_result.get('details', '')}",
-            )
+            answer = str(tool_result.get("details") or "").strip() or str(area_value)
             return {
                 "answer": answer,
                 "pages_used": [],
@@ -225,6 +228,70 @@ def run_qa(
 
         return None
 
+    def _decide_image_grounding(query_text: str, turns: list[dict]) -> dict[str, str | bool]:
+        """Use LLM semantics to decide whether this turn should stay grounded on uploaded image."""
+        if not query_text.strip():
+            return {"use_uploaded_image": True, "confidence": "low", "reason": "empty_query"}
+
+        history_text = _history_context(turns, limit=6)
+        try:
+            from google import genai  # type: ignore
+            from cad_pipeline.config import GEMINI_API_KEY, GEMINI_FLASH_MODEL
+
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            prompt = f"""You are a routing judge in a CAD chat system.
+
+Context:
+- The current turn has an uploaded image available from the user.
+- The assistant may answer from either:
+  A) the uploaded image context, OR
+  B) document/page/file context in the knowledge base.
+
+Recent conversation:
+---
+{history_text}
+---
+
+Current user query:
+"{query_text}"
+
+Decide whether this query should be grounded on the uploaded image.
+
+Decision rules:
+- Choose true if the user is asking about visual/layout details that are best answered from the uploaded image.
+- Choose false if the user intent is to return to document/page/file scope, citation scope, or broader document QA.
+- If ambiguous, prefer true only when image-grounded interpretation is more plausible from conversation continuity.
+
+Reply ONLY as JSON:
+{{
+  "use_uploaded_image": true | false,
+  "confidence": "high" | "medium" | "low",
+  "reason": "<short reason>"
+}}"""
+            resp = client.models.generate_content(
+                model=GEMINI_FLASH_MODEL,
+                contents=prompt,
+            )
+            raw = str(getattr(resp, "text", "") or "").strip()
+            raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            parsed = json.loads(raw)
+            use_uploaded = bool(parsed.get("use_uploaded_image", True))
+            confidence = str(parsed.get("confidence", "low")).lower()
+            if confidence not in {"high", "medium", "low"}:
+                confidence = "low"
+            reason = _trim(str(parsed.get("reason", "")), 180) or "model_decision"
+            return {
+                "use_uploaded_image": use_uploaded,
+                "confidence": confidence,
+                "reason": reason,
+            }
+        except Exception as exc:
+            return {
+                "use_uploaded_image": True,
+                "confidence": "low",
+                "reason": f"fallback_on_error:{_trim(str(exc), 80)}",
+            }
+
     with traced_span(
         "qa.run",
         query=_trim(query, 300),
@@ -240,14 +307,52 @@ def run_qa(
         with traced_span("qa.load_chat_history", folder_id=folder_id, user_email=user_email or "") as history_span:
             chat_history = mongo.get_chat_history(folder_id, user_email=user_email)
             _set_attr(history_span, "chat_history_turns", len(chat_history))
-            _set_attr(history_span, "last_user_turn", _trim((chat_history[-1].get("query") if chat_history else ""), 180))
+            _set_attr(history_span, "last_user_turn", _trim((chat_history[-1].get("role_user") if chat_history else ""), 180))
+            _set_attr(
+                history_span,
+                "last_assistant_turn",
+                _trim((chat_history[-1].get("role_assistant") if chat_history else ""), 180),
+            )
             _set_attr(root_span, "chat_history_turns", len(chat_history))
+            _add_event(history_span, "qa.chat_history.loaded", _history_debug(chat_history))
+
+        effective_image_bytes = image_bytes
+        if image_bytes:
+            with traced_span("qa.image_scope_decision", query=_trim(query, 220)) as image_scope_span:
+                image_scope = _decide_image_grounding(query, chat_history)
+                use_uploaded_image = bool(image_scope.get("use_uploaded_image", True))
+                if not use_uploaded_image:
+                    effective_image_bytes = None
+                _set_attr(image_scope_span, "use_uploaded_image", use_uploaded_image)
+                _set_attr(image_scope_span, "confidence", str(image_scope.get("confidence", "")))
+                _set_attr(image_scope_span, "reason", str(image_scope.get("reason", "")))
+                _set_attr(root_span, "use_uploaded_image", use_uploaded_image)
+                _add_event(
+                    image_scope_span,
+                    "qa.image_scope.selected",
+                    {
+                        "use_uploaded_image": use_uploaded_image,
+                        "confidence": str(image_scope.get("confidence", "")),
+                        "reason": str(image_scope.get("reason", "")),
+                    },
+                )
 
         _emit("Detect query tool intent")
         with traced_span("qa.detect_tool_intent", query=_trim(query, 240)) as tool_span:
-            routed_tool = classify_tool(query=query, image_bytes=image_bytes).get("tool", "none")
+            routed_tool = classify_tool(query=query, image_bytes=effective_image_bytes).get("tool", "none")
             _set_attr(tool_span, "routed_tool", routed_tool)
-            if routed_tool in {"count", "area", "report_pdf", "report_excel"}:
+            # Do not use history shortcut when user provided an image.
+            # Image queries must be grounded on the uploaded image input.
+            if (not effective_image_bytes) and routed_tool in {"count", "area", "report_pdf", "report_excel"}:
+                _add_event(
+                    tool_span,
+                    "qa.tool_shortcut.history_attempt",
+                    {
+                        "tool": routed_tool,
+                        "chat_history_turns": len(chat_history),
+                        "history_context_preview": _trim(_history_context(chat_history), 320),
+                    },
+                )
                 shortcut = _run_tool_from_history(routed_tool, query, chat_history)
                 if shortcut is not None:
                     _add_event(
@@ -258,6 +363,133 @@ def run_qa(
                     if save_history and shortcut.get("answer"):
                         mongo.append_chat_turn(folder_id, query, str(shortcut["answer"]), user_email=user_email)
                     return shortcut
+                _add_event(
+                    tool_span,
+                    "qa.tool_shortcut.history_miss",
+                    {
+                        "tool": routed_tool,
+                        "reason": "insufficient_history_context",
+                    },
+                )
+        # Image-first hard guard:
+        # For count/area queries with uploaded image, answer directly from the uploaded image.
+        # Do not run page-level reasoning to avoid mixing unrelated page context.
+        if effective_image_bytes and routed_tool == "count":
+            _emit("Run image-first count tool")
+            with traced_span("qa.image_first.count", query=_trim(query, 220)) as image_count_span:
+                from cad_pipeline.tools.count_tool import run_count_tool
+
+                tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                try:
+                    tmp.write(effective_image_bytes)
+                    tmp.close()
+                    tool_result = run_count_tool(query=query, image_path=tmp.name)
+                finally:
+                    Path(tmp.name).unlink(missing_ok=True)
+
+                count_value = tool_result.get("count")
+                details = str(tool_result.get("details", "") or "")
+                _set_attr(image_count_span, "count_value", count_value if count_value is not None else "")
+                _set_attr(image_count_span, "mode", str(tool_result.get("mode", "")))
+                _set_attr(image_count_span, "details_preview", _trim(details, 220))
+
+                answer = details.strip() or (str(count_value) if count_value is not None else "")
+
+                if save_history and answer:
+                    mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
+
+                return {
+                    "answer": answer,
+                    "pages_used": [],
+                    "citations": [],
+                    "images": [],
+                    "tool_result": tool_result,
+                    "source_file": "uploaded_image",
+                    "query_type": "qa",
+                }
+        if effective_image_bytes and routed_tool == "area":
+            _emit("Run image-first area tool")
+            with traced_span("qa.image_first.area", query=_trim(query, 220)) as image_area_span:
+                from cad_pipeline.tools.area_tool import run_area_tool
+
+                tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                try:
+                    tmp.write(effective_image_bytes)
+                    tmp.close()
+                    tool_result = run_area_tool(query=query, image_path=tmp.name)
+                finally:
+                    Path(tmp.name).unlink(missing_ok=True)
+
+                area_value = tool_result.get("area")
+                if area_value in (None, "", "unknown"):
+                    area_value = tool_result.get("total_m2")
+                details = str(tool_result.get("details", "") or "")
+                _set_attr(image_area_span, "area_value", str(area_value if area_value is not None else ""))
+                _set_attr(image_area_span, "mode", str(tool_result.get("mode", "")))
+                _set_attr(image_area_span, "details_preview", _trim(details, 220))
+
+                answer = details.strip() or (str(area_value) if area_value not in (None, "", "unknown") else "")
+
+                if save_history and answer:
+                    mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
+
+                return {
+                    "answer": answer,
+                    "pages_used": [],
+                    "citations": [],
+                    "images": [],
+                    "tool_result": tool_result,
+                    "source_file": "uploaded_image",
+                    "query_type": "qa",
+                }
+        if effective_image_bytes and routed_tool == "none":
+            _emit("Run image-first general vision QA")
+            with traced_span("qa.image_first.general", query=_trim(query, 220)) as image_general_span:
+                try:
+                    from google import genai  # type: ignore
+                    from google.genai import types as _gt  # type: ignore
+                    from cad_pipeline.config import GEMINI_API_KEY, GEMINI_PRO_MODEL
+
+                    client = genai.Client(api_key=GEMINI_API_KEY)
+                    prompt = (
+                        "You are an assistant analyzing the user's uploaded CAD/drawing image.\n"
+                        "Answer the user's question using ONLY the uploaded image.\n"
+                        "If the image does not contain enough evidence, say that clearly.\n"
+                        "Do not rely on external document/page context.\n\n"
+                        f'User question: "{query}"'
+                    )
+                    resp = client.models.generate_content(
+                        model=GEMINI_PRO_MODEL,
+                        contents=[
+                            _gt.Part.from_bytes(data=effective_image_bytes, mime_type="image/png"),
+                            prompt,
+                        ],
+                    )
+                    answer = str(getattr(resp, "text", "") or "").strip()
+                    if not answer:
+                        answer = _msg(
+                            "Mình chưa đọc được đủ thông tin từ ảnh bạn gửi để trả lời chính xác.",
+                            "アップロード画像から十分な情報を読み取れず、正確に回答できませんでした。",
+                            "I could not extract enough information from your uploaded image to answer accurately.",
+                        )
+                    tool_result = {"mode": "vision_pro_qa", "source": "uploaded_image"}
+                    _set_attr(image_general_span, "mode", "vision_pro_qa")
+                    _set_attr(image_general_span, "answer_preview", _trim(answer, 220))
+
+                    if save_history and answer:
+                        mongo.append_chat_turn(folder_id, query, answer, user_email=user_email)
+
+                    return {
+                        "answer": answer,
+                        "pages_used": [],
+                        "citations": [],
+                        "images": [],
+                        "tool_result": tool_result,
+                        "source_file": "uploaded_image",
+                        "query_type": "qa",
+                    }
+                except Exception as exc:
+                    _set_attr(image_general_span, "error", _trim(str(exc), 180))
         force_page_level = routed_tool in {"count", "area", "viz", "search", "report_pdf", "report_excel"}
         _set_attr(root_span, "routed_tool", routed_tool)
         _set_attr(root_span, "force_page_level", force_page_level)
@@ -483,7 +715,7 @@ def run_qa(
                 chat_history=chat_history,
                 folder_id=folder_id,
                 file_id=file_id,
-                image_bytes=image_bytes,
+                image_bytes=effective_image_bytes,
                 answer_stream_callback=answer_stream_callback,
             )
             _set_attr(page_span, "pages_used_count", len(page_result.get("pages_used", []) or []))

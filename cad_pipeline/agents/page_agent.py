@@ -386,7 +386,8 @@ Reply ONLY as JSON:
             _tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
             _tmp.write(image_bytes); _tmp.close()
             _img_path = _tmp.name
-        dxf_path = next((p.get("dxf_path") for p in used_pages if p.get("dxf_path")), None)
+        # If user uploaded an image, prioritize counting on that image instead of DXF/page context.
+        dxf_path = None if _img_path else next((p.get("dxf_path") for p in used_pages if p.get("dxf_path")), None)
         tool_result = run_count_tool(
             query=query, dxf_path=dxf_path, context_md=combined_ctx,
             image_path=_img_path,

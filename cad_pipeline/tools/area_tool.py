@@ -17,6 +17,7 @@ from typing import Any
 from cad_pipeline.config import (
     GEMINI_API_KEY,
     GEMINI_FLASH_MODEL,
+    GEMINI_PRO_MODEL,
     SYMBOL_DB_DIR,
 )
 
@@ -101,6 +102,71 @@ Reply ONLY as JSON:
         }
 
 
+def extract_area_from_image(
+    image_path: str | Path,
+    query: str,
+) -> dict:
+    """Ask Gemini Pro to extract area values directly from the uploaded image."""
+    from google import genai  # type: ignore
+    from google.genai import types  # type: ignore
+
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    image_path = Path(image_path)
+
+    prompt = f"""You are analyzing a Japanese architectural CAD drawing image.
+
+Task: Calculate or extract the total area for: "{query}" based ONLY on this uploaded image.
+
+Rules:
+- Read area annotations, schedules, and labels visible in the image.
+- Convert all values to m² when needed (1 tatami = 1.62 m²).
+- If multiple spaces are included, provide a clear breakdown and total.
+- If area data is not visible or not reliable, return area="unknown" and explain why.
+- Do not use any external context.
+
+Reply ONLY as JSON:
+{{
+  "area": "<total value e.g. '120.5' or 'unknown'>",
+  "unit": "m²",
+  "details": "<brief explanation>",
+  "breakdown": [
+    {{"name": "<space name>", "area": "<value>", "unit": "m²"}}
+  ],
+  "confidence": "high" | "medium" | "low"
+}}"""
+
+    try:
+        image_bytes = image_path.read_bytes()
+        suffix = image_path.suffix.lower().lstrip(".")
+        mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png"}.get(suffix, "image/png")
+
+        response = client.models.generate_content(
+            model=GEMINI_PRO_MODEL,
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type=mime),
+                prompt,
+            ],
+        )
+        raw = response.text.strip()
+        raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
+        result = json.loads(raw)
+        result["mode"] = "vision_pro"
+        result["query"] = query
+        result["image"] = image_path.name
+        return result
+    except Exception as exc:
+        return {
+            "area": "unknown",
+            "unit": "m²",
+            "details": f"Error: {exc}",
+            "breakdown": [],
+            "confidence": "low",
+            "mode": "vision_pro",
+            "query": query,
+            "image": str(image_path),
+        }
+
+
 # ── Mode 2: Room catalog lookup ────────────────────────────────────────────
 
 def get_unit_area(unit_label: str) -> dict:
@@ -165,6 +231,7 @@ def run_area_tool(
     query: str,
     context_md: str | None = None,
     unit_label: str | None = None,
+    image_path: str | Path | None = None,
 ) -> dict:
     """Main entry point for the area tool.
 
@@ -172,12 +239,16 @@ def run_area_tool(
         query: What area to calculate.
         context_md: Page context for LLM-based extraction.
         unit_label: If set, look up directly in unit catalog.
+        image_path: Optional image input for vision-based extraction.
 
     Returns:
         Area result dict.
     """
     if unit_label:
         return get_unit_area(unit_label)
+
+    if image_path and Path(image_path).exists():
+        return extract_area_from_image(image_path, query)
 
     if context_md:
         return extract_area_from_context(context_md, query)
