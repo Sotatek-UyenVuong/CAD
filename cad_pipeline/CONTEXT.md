@@ -516,6 +516,9 @@ hatch_pattern, floor_plan_layout, landscape_outdoor, unknown_misc
 # Upload
 POST   /upload                          Upload + index file (async)
 GET    /upload/{job_id}/status          Poll upload progress
+GET    /notifications                   List user notifications (persisted)
+PATCH  /notifications/{id}/read         Mark one notification read/unread
+PATCH  /notifications/read-all          Mark all notifications as read
 
 # Chatbot (Q&A agent pipeline + chat history)
 POST   /qa                              Chatbot query → Folder→File→Page→Tool
@@ -542,3 +545,48 @@ GET    /tools/area/units/{label}        Unit detail + room breakdown
 POST   /tools/count/context             Count in page context (LLM)
 POST   /tools/area/context              Area from page context (LLM)
 ```
+
+---
+
+## Recent logic updates (2026-04-21)
+
+### 1) Upload notification center (persisted by user)
+- Added backend notification persistence (`notifications` collection in MongoDB).
+- Each upload now writes lifecycle notifications:
+  - `processing` when upload starts (read=true by default),
+  - `done` when indexing finishes (read=false),
+  - `error` when upload fails (read=false).
+- Added APIs:
+  - `GET /notifications`,
+  - `PATCH /notifications/{id}/read`,
+  - `PATCH /notifications/read-all`.
+- Frontend now has a bell icon notification center on Home:
+  - unread badge,
+  - dropdown list,
+  - mark-one / mark-all read,
+  - reload-safe because data is loaded from DB per user.
+
+### 2) Long upload UX (3-minute detach)
+- In upload modal, if processing exceeds 3 minutes:
+  - modal auto-closes,
+  - user sees "still processing in background",
+  - polling continues in background,
+  - completion/failure toast is shown when final status arrives.
+
+### 3) Create session search parity
+- `Create New Chat Session` search now:
+  - runs name-based suggest first,
+  - falls back to semantic search if suggest returns empty.
+- Added duplicate session name guard in create modal:
+  - if session name already exists (case-insensitive), creation is blocked and user is warned.
+
+### 4) Image QA routing refinement
+- Title-block lookup shortcut is now controlled by orchestrator plan (`allow_title_block_lookup`),
+  not hardcoded keyword rules.
+- This avoids misrouting image-content questions (e.g. "what is in this image")
+  into file-match search, while still allowing source-file lookup intent.
+
+### 5) Home upload simplification
+- Removed folder upload CTA from Home upload section (file-only upload UI).
+- Updated supported formats in UI:
+  - `PDF, DOC, DOCX, XLS, XLSX, PNG, JPG, JPEG, WEBP, GIF, BMP, TIF, TIFF`.

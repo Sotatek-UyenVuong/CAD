@@ -9,7 +9,9 @@ Collections:
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 from typing import Any
+import unicodedata
 
 from pymongo import MongoClient, ASCENDING
 from pymongo.collection import Collection
@@ -42,6 +44,9 @@ def _ensure_indexes(db: Database) -> None:
     db["chat_sessions"].create_index([("user_email", ASCENDING), ("session_id", ASCENDING)])
     db["chat_history"].create_index([("folder_id", ASCENDING)])
     db["chat_history"].create_index([("user_email", ASCENDING), ("folder_id", ASCENDING)])
+    db["notifications"].create_index([("user_email", ASCENDING), ("created_at", ASCENDING)])
+    db["notifications"].create_index([("user_email", ASCENDING), ("is_read", ASCENDING)])
+    db["notifications"].create_index([("user_email", ASCENDING), ("job_id", ASCENDING)], unique=True, sparse=True)
 
 
 # ── Folders ────────────────────────────────────────────────────────────────
@@ -133,11 +138,14 @@ def search_files(
     Each result includes folder metadata for grouping in the UI.
     Returns up to `limit` files sorted by file_name.
     """
-    import re as _re
     db = get_db()
+    q_norm = unicodedata.normalize("NFKC", q).strip()
 
     # Build filter
-    pattern = _re.compile(_re.escape(q), _re.IGNORECASE)
+    tokens = re.findall(r"\w+", q_norm, flags=re.UNICODE)
+    connector = r"[\s　_\-./\\()（）\[\]【】・,:：;；]*"
+    pattern_str = connector.join(re.escape(t) for t in tokens) if tokens else re.escape(q_norm)
+    pattern = re.compile(pattern_str, re.IGNORECASE)
     name_filter: dict = {
         "$or": [
             {"file_name":     {"$regex": pattern}},
@@ -173,9 +181,12 @@ def search_files(
 
 def search_folders(q: str, limit: int = 10) -> list[dict]:
     """Instant folder name search across the whole library."""
-    import re as _re
     db = get_db()
-    pattern = _re.compile(_re.escape(q), _re.IGNORECASE)
+    q_norm = unicodedata.normalize("NFKC", q).strip()
+    tokens = re.findall(r"\w+", q_norm, flags=re.UNICODE)
+    connector = r"[\s　_\-./\\()（）\[\]【】・,:：;；]*"
+    pattern_str = connector.join(re.escape(t) for t in tokens) if tokens else re.escape(q_norm)
+    pattern = re.compile(pattern_str, re.IGNORECASE)
     folders = list(
         db["folders"]
         .find({"name": {"$regex": pattern}}, {"_id": 1, "name": 1})
@@ -526,6 +537,89 @@ def update_user_last_login(email: str) -> None:
 def delete_user(email: str) -> bool:
     result = get_db()["users"].delete_one({"_id": email})
     return result.deleted_count > 0
+
+
+# ── Notifications ───────────────────────────────────────────────────────────
+
+def upsert_notification(
+    notification_id: str,
+    user_email: str,
+    kind: str,
+    title: str,
+    message: str,
+    is_read: bool = False,
+    status: str | None = None,
+    job_id: str | None = None,
+    file_id: str | None = None,
+    file_name: str | None = None,
+) -> None:
+    doc: dict[str, Any] = {
+        "user_email": user_email,
+        "kind": kind,
+        "title": title,
+        "message": message,
+        "is_read": is_read,
+        "updated_at": _now(),
+    }
+    if status is not None:
+        doc["status"] = status
+    if job_id is not None:
+        doc["job_id"] = job_id
+    if file_id is not None:
+        doc["file_id"] = file_id
+    if file_name is not None:
+        doc["file_name"] = file_name
+    get_db()["notifications"].update_one(
+        {"_id": notification_id},
+        {"$set": doc, "$setOnInsert": {"created_at": _now()}},
+        upsert=True,
+    )
+
+
+def update_notification_by_job(
+    user_email: str,
+    job_id: str,
+    updates: dict[str, Any],
+) -> bool:
+    if not updates:
+        return False
+    updates["updated_at"] = _now()
+    result = get_db()["notifications"].update_one(
+        {"user_email": user_email, "job_id": job_id},
+        {"$set": updates},
+    )
+    return result.matched_count > 0
+
+
+def list_notifications(user_email: str, limit: int = 50) -> list[dict]:
+    rows = list(
+        get_db()["notifications"]
+        .find({"user_email": user_email})
+        .sort("created_at", -1)
+        .limit(limit)
+    )
+    out: list[dict] = []
+    for r in rows:
+        row = dict(r)
+        row["id"] = str(row.pop("_id"))
+        out.append(row)
+    return out
+
+
+def mark_notification_read(notification_id: str, user_email: str, is_read: bool = True) -> bool:
+    result = get_db()["notifications"].update_one(
+        {"_id": notification_id, "user_email": user_email},
+        {"$set": {"is_read": is_read, "updated_at": _now()}},
+    )
+    return result.matched_count > 0
+
+
+def mark_all_notifications_read(user_email: str) -> int:
+    result = get_db()["notifications"].update_many(
+        {"user_email": user_email, "is_read": False},
+        {"$set": {"is_read": True, "updated_at": _now()}},
+    )
+    return int(result.modified_count)
 
 
 # ── Helper ─────────────────────────────────────────────────────────────────

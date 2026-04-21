@@ -511,6 +511,7 @@ Reply ONLY JSON:
         default_plan: dict[str, object] = {
             "grounding_mode": "uploaded_image" if has_image else "page_context",
             "preferred_tool": routed_tool_hint if routed_tool_hint in tool_options else "none",
+            "allow_title_block_lookup": has_image and routed_tool_hint in {"none", "search"},
             "use_history_shortcut": not has_image,
             "force_page_level": routed_tool_hint in {"count", "area", "viz", "search", "report_pdf", "report_docx", "report_excel"},
             "allow_folder_direct_answer": routed_tool_hint == "none",
@@ -551,6 +552,7 @@ Return ONLY JSON:
 {{
   "grounding_mode": "uploaded_image" | "page_context" | "hybrid",
   "preferred_tool": "none" | "search" | "count" | "area" | "viz" | "report_pdf" | "report_docx" | "report_excel",
+  "allow_title_block_lookup": true | false,
   "use_history_shortcut": true | false,
   "force_page_level": true | false,
   "allow_folder_direct_answer": true | false,
@@ -573,6 +575,8 @@ Rules:
 - Avoid rigid flow; allow early exit when confidence is sufficient.
 - If user intent is clearly about uploaded image details, grounding_mode should favor uploaded_image.
 - If user intent shifts back to document/page citations, grounding_mode should favor page_context.
+- Set allow_title_block_lookup=true only when user intent is to identify source file/drawing from the uploaded image.
+- Set allow_title_block_lookup=false when user asks to describe/explain/count content in the image itself.
 - If uncertain, choose hybrid.
 - Keep plan conservative: avoid hallucination and preserve citation quality.
 """
@@ -599,6 +603,7 @@ Rules:
                 {
                     "grounding_mode": grounding,
                     "preferred_tool": preferred_tool,
+                    "allow_title_block_lookup": bool(parsed.get("allow_title_block_lookup", plan["allow_title_block_lookup"])),
                     "use_history_shortcut": bool(parsed.get("use_history_shortcut", plan["use_history_shortcut"])),
                     "force_page_level": bool(parsed.get("force_page_level", plan["force_page_level"])),
                     "allow_folder_direct_answer": bool(parsed.get("allow_folder_direct_answer", plan["allow_folder_direct_answer"])),
@@ -784,7 +789,24 @@ Return ONLY JSON:
             _add_event(history_span, "qa.chat_history.loaded", _history_debug(chat_history))
 
         routed_tool_hint = classify_tool(query=query, image_bytes=image_bytes).get("tool", "none")
-        if image_bytes and routed_tool_hint in {"none", "search"}:
+        with traced_span("qa.orchestrator.plan", query=_trim(query, 220)) as plan_span:
+            plan = _run_orchestrator_plan(
+                query_text=query,
+                turns=chat_history,
+                has_image=bool(image_bytes),
+                routed_tool_hint=routed_tool_hint,
+            )
+            _set_attr(plan_span, "grounding_mode", str(plan.get("grounding_mode", "")))
+            _set_attr(plan_span, "preferred_tool", str(plan.get("preferred_tool", "")))
+            _set_attr(plan_span, "use_history_shortcut", bool(plan.get("use_history_shortcut", False)))
+            _set_attr(plan_span, "force_page_level", bool(plan.get("force_page_level", False)))
+            _set_attr(plan_span, "allow_image_early_answer", bool(plan.get("allow_image_early_answer", False)))
+            _set_attr(plan_span, "reason", str(plan.get("reason", "")))
+            _add_event(plan_span, "qa.orchestrator.plan_ready", {k: str(v) for k, v in plan.items()})
+            _emit_ui_updates(plan.get("ui_updates"))
+
+        allow_title_block_lookup = bool(plan.get("allow_title_block_lookup", False))
+        if image_bytes and allow_title_block_lookup and routed_tool_hint in {"none", "search"}:
             _emit("Title-block lookup on uploaded image")
             with traced_span("qa.title_block_lookup", query=_trim(query, 220)) as tb_span:
                 if session_file_ids is not None:
@@ -842,21 +864,6 @@ Return ONLY JSON:
                     "qa.title_block_lookup.miss",
                     {"reason": "no_confident_match"},
                 )
-        with traced_span("qa.orchestrator.plan", query=_trim(query, 220)) as plan_span:
-            plan = _run_orchestrator_plan(
-                query_text=query,
-                turns=chat_history,
-                has_image=bool(image_bytes),
-                routed_tool_hint=routed_tool_hint,
-            )
-            _set_attr(plan_span, "grounding_mode", str(plan.get("grounding_mode", "")))
-            _set_attr(plan_span, "preferred_tool", str(plan.get("preferred_tool", "")))
-            _set_attr(plan_span, "use_history_shortcut", bool(plan.get("use_history_shortcut", False)))
-            _set_attr(plan_span, "force_page_level", bool(plan.get("force_page_level", False)))
-            _set_attr(plan_span, "allow_image_early_answer", bool(plan.get("allow_image_early_answer", False)))
-            _set_attr(plan_span, "reason", str(plan.get("reason", "")))
-            _add_event(plan_span, "qa.orchestrator.plan_ready", {k: str(v) for k, v in plan.items()})
-            _emit_ui_updates(plan.get("ui_updates"))
 
         use_uploaded_image = bool(image_bytes) and str(plan.get("grounding_mode", "page_context")) in {"uploaded_image", "hybrid"}
         effective_image_bytes = image_bytes if use_uploaded_image else None

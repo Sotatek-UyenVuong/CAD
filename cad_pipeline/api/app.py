@@ -192,6 +192,20 @@ async def upload_file(
     tmp.close()
 
     _upload_status[job_id] = {"status": "processing", "progress": [], "file_id": fid}
+    user_email = _user["email"]
+    notif_id = f"{user_email}::upload::{job_id}"
+    mongo.upsert_notification(
+        notification_id=notif_id,
+        user_email=user_email,
+        kind="upload",
+        title="Upload is processing",
+        message=f"{filename} is being processed in the background.",
+        is_read=True,
+        status="processing",
+        job_id=job_id,
+        file_id=fid,
+        file_name=filename,
+    )
 
     def _progress(msg: str) -> None:
         _upload_status[job_id]["progress"].append(msg)
@@ -208,9 +222,29 @@ async def upload_file(
             )
             _upload_status[job_id]["status"] = "done"
             _upload_status[job_id]["result"] = result
+            mongo.update_notification_by_job(
+                user_email=user_email,
+                job_id=job_id,
+                updates={
+                    "title": "Upload completed",
+                    "message": f"{filename} finished processing.",
+                    "status": "done",
+                    "is_read": False,
+                },
+            )
         except Exception as exc:
             _upload_status[job_id]["status"] = "error"
             _upload_status[job_id]["error"] = str(exc)
+            mongo.update_notification_by_job(
+                user_email=user_email,
+                job_id=job_id,
+                updates={
+                    "title": "Upload failed",
+                    "message": f"{filename} failed: {str(exc)}",
+                    "status": "error",
+                    "is_read": False,
+                },
+            )
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -226,6 +260,35 @@ def upload_status(job_id: str):
     if not status:
         raise HTTPException(status_code=404, detail="Job not found")
     return status
+
+
+class NotificationReadRequest(BaseModel):
+    is_read: bool = True
+
+
+@app.get("/notifications")
+def list_notifications(limit: int = 50, _user: dict = Depends(get_current_user)):
+    rows = mongo.list_notifications(_user["email"], limit=max(1, min(limit, 200)))
+    unread = sum(1 for r in rows if not r.get("is_read"))
+    return {"notifications": rows, "unread_count": unread}
+
+
+@app.patch("/notifications/{notification_id}/read")
+def mark_notification_read(
+    notification_id: str,
+    req: NotificationReadRequest,
+    _user: dict = Depends(get_current_user),
+):
+    ok = mongo.mark_notification_read(notification_id, _user["email"], is_read=bool(req.is_read))
+    if not ok:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"id": notification_id, "is_read": bool(req.is_read)}
+
+
+@app.patch("/notifications/read-all")
+def mark_all_notifications_read(_user: dict = Depends(get_current_user)):
+    modified = mongo.mark_all_notifications_read(_user["email"])
+    return {"modified": modified}
 
 
 # ── Q&A ────────────────────────────────────────────────────────────────────
