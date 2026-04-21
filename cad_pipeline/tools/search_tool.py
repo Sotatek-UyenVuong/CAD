@@ -145,6 +145,41 @@ def _extract_title_block_query(
         return {"drawing_no": "", "drawing_title": "", "project": ""}
 
 
+def _extract_title_block_query_from_text(
+    query: str,
+    model: str | None = None,
+) -> dict[str, str]:
+    """Extract potential title-block metadata directly from text query."""
+    try:
+        from google import genai  # type: ignore
+
+        text = (query or "").strip()
+        if not text:
+            return {"drawing_no": "", "drawing_title": "", "project": ""}
+
+        _model = model or GEMINI_FLASH_MODEL
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        prompt = f"""Extract potential title-block metadata from this user query.
+If a field is not explicitly present, return empty string for that field.
+User query: "{text}"
+Return ONLY JSON:
+{{ "drawing_no": "<string or empty>", "drawing_title": "<string or empty>", "project": "<string or empty>" }}"""
+        response = client.models.generate_content(
+            model=_model,
+            contents=prompt,
+        )
+        raw = response.text.strip()
+        raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
+        parsed = json.loads(raw)
+        return {
+            "drawing_no": str(parsed.get("drawing_no", "")).strip(),
+            "drawing_title": str(parsed.get("drawing_title", "")).strip(),
+            "project": str(parsed.get("project", "")).strip(),
+        }
+    except Exception:
+        return {"drawing_no": "", "drawing_title": "", "project": ""}
+
+
 def _norm(value: object) -> str:
     text = str(value or "").strip().lower()
     text = re.sub(r"\s+", "", text)
@@ -316,27 +351,32 @@ def run_search_tool(
         except Exception:
             _img = None
 
-    # ── 2. Describe image with Gemini (if provided) ─────────────────────────
+    # ── 2. Build optional image/title metadata ──────────────────────────────
     description = ""
     title_query = {"drawing_no": "", "drawing_title": "", "project": ""}
     if _img:
         description = _describe_image(_img, hint=query or "", model=gemini_model)
         title_query = _extract_title_block_query(_img, hint=query or "", model=gemini_model)
-        title_hits = _title_block_index_lookup(
-            title_query=title_query,
-            folder_id=folder_id,
-            file_id=file_id,
-            top_n=top_n,
-        )
-        if title_hits:
-            return {
-                "query_used": query or "",
-                "image_description": description,
-                "title_block_query": title_query,
-                "retrieval_mode": "title_block_index",
-                "total": len(title_hits),
-                "results": title_hits,
-            }
+    elif query:
+        # Text-only queries can still target drawing number/title/project.
+        title_query = _extract_title_block_query_from_text(query, model=gemini_model)
+
+    # ── 2.5 Title-block deterministic lookup (image or text) ────────────────
+    title_hits = _title_block_index_lookup(
+        title_query=title_query,
+        folder_id=folder_id,
+        file_id=file_id,
+        top_n=top_n,
+    )
+    if title_hits:
+        return {
+            "query_used": query or "",
+            "image_description": description,
+            "title_block_query": title_query,
+            "retrieval_mode": "title_block_index",
+            "total": len(title_hits),
+            "results": title_hits,
+        }
 
     # ── 3. Build final query ────────────────────────────────────────────────
     parts = [p for p in [query, description] if p]

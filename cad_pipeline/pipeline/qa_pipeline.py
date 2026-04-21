@@ -134,6 +134,54 @@ def run_qa(
             lines.append(f"Assistant: {t.get('role_assistant', '')}")
         return "\n".join(lines)
 
+    def _history_context_compact(turns: list[dict], limit: int = 2, max_chars: int = 420) -> str:
+        if not turns:
+            return ""
+        lines: list[str] = []
+        for t in turns[-limit:]:
+            u = _trim(str(t.get("role_user", "")), 120)
+            a = _trim(str(t.get("role_assistant", "")), 120)
+            if u:
+                lines.append(f"U:{u}")
+            if a:
+                lines.append(f"A:{a}")
+        text = " | ".join(lines)
+        return text[:max_chars]
+
+    def _build_working_file_context(
+        current_folder_id: str,
+        scoped_file_ids: list[str] | None,
+    ) -> list[dict]:
+        if scoped_file_ids is not None:
+            files = mongo.get_files_by_ids(scoped_file_ids)
+            allowed = set(scoped_file_ids)
+            files = [f for f in files if str(f.get("_id", "")) in allowed]
+        else:
+            files = mongo.list_files(current_folder_id)
+        ctx: list[dict] = []
+        for f in files:
+            fid = str(f.get("_id", "")).strip()
+            if not fid:
+                continue
+            ctx.append(
+                {
+                    "file_id": fid,
+                    "file_name": str(f.get("file_name", fid) or fid),
+                    "short_summary": _trim(str(f.get("short_summary") or f.get("summary") or ""), 220),
+                }
+            )
+        return ctx
+
+    def _working_file_context_text(working_files: list[dict], limit: int = 20) -> str:
+        if not working_files:
+            return "(none)"
+        lines: list[str] = []
+        for f in working_files[:limit]:
+            lines.append(
+                f"- file_id={f.get('file_id', '')}; file_name={f.get('file_name', '')}; short_summary={f.get('short_summary', '')}"
+            )
+        return "\n".join(lines)
+
     def _save_turn(
         answer_text: str,
         *,
@@ -182,6 +230,105 @@ def run_qa(
         if not text:
             return ""
         return re.sub(r"\s+", " ", text)
+
+    def _is_page_lookup_query(query_text: str) -> bool:
+        q = _norm_text(query_text)
+        if not q:
+            return False
+        hints = [
+            "page nào",
+            "trang nào",
+            "trang mấy",
+            "ở page",
+            "ở trang",
+            "which page",
+            "what page",
+            "ページ",
+            "何ページ",
+        ]
+        return any(h in q for h in hints)
+
+    def _extract_turn_citations(turn: dict) -> list[dict]:
+        assistant_meta = turn.get("assistant_meta")
+        if not isinstance(assistant_meta, dict):
+            return []
+        citations = assistant_meta.get("citations")
+        if not isinstance(citations, list):
+            return []
+        out: list[dict] = []
+        for c in citations:
+            if not isinstance(c, dict):
+                continue
+            file_id = str(c.get("file_id", "")).strip()
+            file_name = str(c.get("file_name", file_id)).strip() or file_id
+            try:
+                page_number = int(c.get("page_number", 0))
+            except Exception:
+                page_number = 0
+            if not file_id or page_number <= 0:
+                continue
+            out.append(
+                {
+                    "file_id": file_id,
+                    "file_name": file_name,
+                    "page_number": page_number,
+                }
+            )
+        return out
+
+    def _try_page_lookup_from_history(query_text: str, turns: list[dict]) -> dict[str, object] | None:
+        if not _is_page_lookup_query(query_text):
+            return None
+        if not turns:
+            return None
+        recent_citations: list[dict] = []
+        for turn in reversed(turns[-5:]):
+            citations = _extract_turn_citations(turn)
+            if citations:
+                recent_citations = citations
+                break
+        if not recent_citations:
+            return None
+
+        dedup: list[dict] = []
+        seen: set[tuple[str, int]] = set()
+        for c in recent_citations:
+            key = (str(c["file_id"]), int(c["page_number"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            dedup.append(c)
+        if not dedup:
+            return None
+
+        pages_used = sorted({int(c["page_number"]) for c in dedup})
+        if len(dedup) == 1:
+            c = dedup[0]
+            answer = _msg(
+                f"Nội dung đó nằm ở **trang {c['page_number']}** của **{c['file_name']}**.",
+                f"その内容は **{c['file_name']}** の **{c['page_number']}ページ** にあります。",
+                f"That content is on **page {c['page_number']}** of **{c['file_name']}**.",
+            )
+        else:
+            lines = []
+            for c in dedup[:6]:
+                lines.append(f"- **{c['file_name']}**: page {c['page_number']}")
+            header = _msg(
+                "Theo ngữ cảnh ngay trước đó, các trang liên quan là:",
+                "直前の文脈では、関連ページは次のとおりです:",
+                "From the immediately previous context, the relevant pages are:",
+            )
+            answer = header + "\n" + "\n".join(lines)
+
+        return {
+            "answer": answer,
+            "pages_used": pages_used,
+            "citations": dedup,
+            "images": [],
+            "tool_result": {"mode": "history_page_lookup"},
+            "source_file": str(dedup[0].get("file_name", "chat_history")),
+            "query_type": "qa",
+        }
 
     def _extract_title_block_from_image(query_text: str, img_bytes: bytes) -> dict[str, str]:
         try:
@@ -505,8 +652,9 @@ Reply ONLY JSON:
         turns: list[dict],
         has_image: bool,
         routed_tool_hint: str,
+        working_files: list[dict],
     ) -> dict[str, object]:
-        """Plan execution with a single Pro-model orchestrator."""
+        """Plan execution using a deterministic plan-tree + optional LLM branch pick."""
         tool_options = {"none", "search", "count", "area", "viz", "report_pdf", "report_docx", "report_excel"}
         default_plan: dict[str, object] = {
             "grounding_mode": "uploaded_image" if has_image else "page_context",
@@ -520,104 +668,141 @@ Reply ONLY JSON:
             "early_exit_confidence": "medium",
             "reason": "default_fallback_plan",
             "ui_updates": [],
+            "working_file_count": len(working_files),
         }
-        history_text = _history_context(turns, limit=6)
+        history_text = _history_context_compact(turns, limit=2)
+        working_context = _working_file_context_text(working_files, limit=20)
 
-        try:
-            from google import genai  # type: ignore
-            from cad_pipeline.config import GEMINI_API_KEY, GEMINI_PRO_MODEL
+        # Plan tree candidates (ordered by deterministic priority).
+        candidates: list[str] = []
+        if has_image and routed_tool_hint in {"none", "search", "count", "area"}:
+            candidates.append("image_first")
+        if routed_tool_hint in {"count", "area", "report_pdf", "report_docx", "report_excel"}:
+            candidates.append("history_first")
+        if routed_tool_hint in {"search", "viz", "count", "area", "report_pdf", "report_docx", "report_excel"}:
+            candidates.append("page_first")
+        candidates.extend(["folder_first", "file_first"])
+        # Keep order and uniqueness.
+        ordered_candidates: list[str] = []
+        seen_candidates: set[str] = set()
+        for c in candidates:
+            if c in seen_candidates:
+                continue
+            seen_candidates.add(c)
+            ordered_candidates.append(c)
+        if not ordered_candidates:
+            ordered_candidates = ["folder_first", "file_first", "page_first"]
 
-            client = genai.Client(api_key=GEMINI_API_KEY)
-            prompt = f"""You are the Orchestrator Agent for a CAD assistant pipeline.
+        chosen_branch = ordered_candidates[0]
+        branch_reason = "deterministic_tree"
 
-Your job is to decide a smooth execution plan with early-exit when enough evidence is available.
+        # Fast path: explicit tool intent usually does not need an LLM plan decision.
+        needs_llm_branch_pick = routed_tool_hint == "none"
 
-Available specialized tools/agents:
-- history_tool: reuse recent chat history for count/area/report shortcuts
-- folder_agent: choose relevant files or answer only very high-level overview
-- file_agent: decide direct summary answer vs candidate pages
-- page_agent: full page-level reasoning + downstream tool execution
-- image_tools: direct uploaded-image execution for count/area/general vision QA
+        if needs_llm_branch_pick:
+            try:
+                from google import genai  # type: ignore
+                from cad_pipeline.config import GEMINI_API_KEY, GEMINI_FLASH_MODEL
 
-Inputs:
-- has_uploaded_image: {str(has_image).lower()}
-- tool_router_hint: "{routed_tool_hint}"
-- user_query: "{query_text}"
-- recent_conversation:
----
-{history_text}
----
-
+                client = genai.Client(api_key=GEMINI_API_KEY)
+                prompt = f"""Select one execution branch for a CAD QA pipeline.
 Return ONLY JSON:
 {{
-  "grounding_mode": "uploaded_image" | "page_context" | "hybrid",
-  "preferred_tool": "none" | "search" | "count" | "area" | "viz" | "report_pdf" | "report_docx" | "report_excel",
-  "allow_title_block_lookup": true | false,
-  "use_history_shortcut": true | false,
-  "force_page_level": true | false,
-  "allow_folder_direct_answer": true | false,
-  "allow_file_direct_answer": true | false,
-  "allow_image_early_answer": true | false,
-  "early_exit_confidence": "high" | "medium" | "low",
-  "reason": "<short rationale>",
-  "ui_updates": [
-    {{
-      "phase": "plan_created" | "step_started" | "tool_called" | "tool_result" | "replan" | "finalizing",
-      "message": "<natural short update in user's language, context-aware>",
-      "step_id": "<optional>",
-      "tool": "<optional>",
-      "status": "running" | "done" | "error"
-    }}
-  ]
+  "branch": "image_first" | "history_first" | "folder_first" | "file_first" | "page_first",
+  "reason": "<very short reason>"
 }}
-
+Agent responsibilities:
+- folder_agent: use file short summaries to either answer only high-level overview questions or choose relevant file_ids.
+- file_agent: use one file summary to either answer if explicit enough or return candidate page numbers.
+- page_agent: read full page context_md, produce grounded answer with citations, and decide whether specialist tools are needed.
+Tool capabilities and expected inputs:
+- search: semantic retrieval; input = query + scope (folder_id/file_id) + optional uploaded image.
+- count: symbol/object counting; input = query + (context_md or uploaded image).
+- area: area estimation/calculation; input = query + (context_md or uploaded image).
+- viz: visual highlight/visualization request; input = query + selected page context.
+- report_pdf/report_docx: structured report generation; input = query + selected pages (context_md + metadata).
+- report_excel: spreadsheet report generation; input = query + selected pages + optional chat_history context.
+Candidates: {ordered_candidates}
+Query: "{_trim(query_text, 220)}"
+Tool hint: "{routed_tool_hint}"
+Has image: {str(has_image).lower()}
+Recent chat: "{history_text}"
+Working file context (always in scope for this query):
+{working_context}
 Rules:
-- Avoid rigid flow; allow early exit when confidence is sufficient.
-- If user intent is clearly about uploaded image details, grounding_mode should favor uploaded_image.
-- If user intent shifts back to document/page citations, grounding_mode should favor page_context.
-- Set allow_title_block_lookup=true only when user intent is to identify source file/drawing from the uploaded image.
-- Set allow_title_block_lookup=false when user asks to describe/explain/count content in the image itself.
-- If uncertain, choose hybrid.
-- Keep plan conservative: avoid hallucination and preserve citation quality.
+- choose image_first when uploaded image itself should be analyzed first
+- choose history_first only for follow-up/reuse from recent turns
+- choose page_first for detail-specific evidence-heavy questions
+- choose folder_first/file_first for high-level summary routing
 """
-            resp = client.models.generate_content(
-                model=GEMINI_PRO_MODEL,
-                contents=prompt,
-            )
-            raw = str(getattr(resp, "text", "") or "").strip()
-            raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-            parsed = json.loads(raw)
-            plan = dict(default_plan)
+                resp = client.models.generate_content(model=GEMINI_FLASH_MODEL, contents=prompt)
+                raw = str(getattr(resp, "text", "") or "").strip()
+                raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+                parsed = json.loads(raw)
+                branch_candidate = str(parsed.get("branch", "")).strip().lower()
+                if branch_candidate in ordered_candidates:
+                    chosen_branch = branch_candidate
+                    branch_reason = _trim(str(parsed.get("reason", "")), 180) or "model_branch_pick"
+                else:
+                    branch_reason = "fallback_invalid_branch"
+            except Exception as exc:
+                branch_reason = f"fallback_on_error:{_trim(str(exc), 80)}"
 
-            grounding = str(parsed.get("grounding_mode", plan["grounding_mode"])).lower()
-            if grounding not in {"uploaded_image", "page_context", "hybrid"}:
-                grounding = str(plan["grounding_mode"])
-            preferred_tool = str(parsed.get("preferred_tool", plan["preferred_tool"])).lower()
-            if preferred_tool not in tool_options:
-                preferred_tool = str(plan["preferred_tool"])
-            early_conf = str(parsed.get("early_exit_confidence", "medium")).lower()
-            if early_conf not in {"high", "medium", "low"}:
-                early_conf = "medium"
-
+        plan = dict(default_plan)
+        if chosen_branch == "image_first":
             plan.update(
                 {
-                    "grounding_mode": grounding,
-                    "preferred_tool": preferred_tool,
-                    "allow_title_block_lookup": bool(parsed.get("allow_title_block_lookup", plan["allow_title_block_lookup"])),
-                    "use_history_shortcut": bool(parsed.get("use_history_shortcut", plan["use_history_shortcut"])),
-                    "force_page_level": bool(parsed.get("force_page_level", plan["force_page_level"])),
-                    "allow_folder_direct_answer": bool(parsed.get("allow_folder_direct_answer", plan["allow_folder_direct_answer"])),
-                    "allow_file_direct_answer": bool(parsed.get("allow_file_direct_answer", plan["allow_file_direct_answer"])),
-                    "allow_image_early_answer": bool(parsed.get("allow_image_early_answer", plan["allow_image_early_answer"])),
-                    "early_exit_confidence": early_conf,
-                    "reason": _trim(str(parsed.get("reason", "")), 180) or "model_plan",
-                    "ui_updates": _sanitize_ui_updates(parsed.get("ui_updates")),
+                    "grounding_mode": "uploaded_image" if has_image else str(plan["grounding_mode"]),
+                    "allow_image_early_answer": bool(has_image),
+                    "allow_title_block_lookup": bool(has_image and routed_tool_hint in {"none", "search"}),
+                    "use_history_shortcut": False,
+                    "force_page_level": False,
+                    "allow_folder_direct_answer": False,
+                    "allow_file_direct_answer": False,
                 }
             )
-            return plan
-        except Exception as exc:
-            default_plan["reason"] = f"fallback_on_error:{_trim(str(exc), 80)}"
-            return default_plan
+        elif chosen_branch == "history_first":
+            plan.update(
+                {
+                    "use_history_shortcut": not has_image,
+                    "force_page_level": False,
+                    "allow_folder_direct_answer": False,
+                    "allow_file_direct_answer": False,
+                    "allow_image_early_answer": bool(has_image),
+                }
+            )
+        elif chosen_branch == "page_first":
+            plan.update(
+                {
+                    "use_history_shortcut": False,
+                    "force_page_level": True,
+                    "allow_folder_direct_answer": False,
+                    "allow_file_direct_answer": False,
+                }
+            )
+        elif chosen_branch == "file_first":
+            plan.update(
+                {
+                    "use_history_shortcut": False,
+                    "force_page_level": False,
+                    "allow_folder_direct_answer": False,
+                    "allow_file_direct_answer": True,
+                }
+            )
+        else:  # folder_first
+            plan.update(
+                {
+                    "use_history_shortcut": False,
+                    "force_page_level": False,
+                    "allow_folder_direct_answer": True,
+                    "allow_file_direct_answer": True,
+                }
+            )
+
+        plan["reason"] = f"{branch_reason}; branch={chosen_branch}"
+        plan["ui_updates"] = []
+        plan["working_file_count"] = len(working_files)
+        return plan
 
     def _orchestrator_replan_after_step(
         query_text: str,
@@ -660,7 +845,7 @@ Rules:
 
         try:
             from google import genai  # type: ignore
-            from cad_pipeline.config import GEMINI_API_KEY, GEMINI_PRO_MODEL
+            from cad_pipeline.config import GEMINI_API_KEY, GEMINI_FLASH_MODEL
 
             client = genai.Client(api_key=GEMINI_API_KEY)
             prompt = f"""You are the Orchestrator Agent deciding whether to stop early.
@@ -668,6 +853,17 @@ Rules:
 User query: "{query_text}"
 Current step: "{step_name}"
 Current plan (JSON): {json.dumps(plan, ensure_ascii=False)}
+Agent responsibilities (for deciding next_tool_sequence):
+- folder_agent: file-summary level routing (overview answer or relevant file_ids)
+- file_agent: file-summary level decision (direct answer vs candidate pages)
+- page_agent: page-context grounded answer with citations and potential tool execution
+Tool capabilities and expected inputs:
+- search: query + folder/file scope + optional image.
+- count: query + (context_md or image).
+- area: query + (context_md or image).
+- viz: query + selected page context.
+- report_pdf/report_docx: query + selected pages.
+- report_excel: query + selected pages + optional chat_history.
 Provisional answer:
 ---
 {answer[:1600]}
@@ -694,7 +890,7 @@ Return ONLY JSON:
     }}
   ]
 }}"""
-            resp = client.models.generate_content(model=GEMINI_PRO_MODEL, contents=prompt)
+            resp = client.models.generate_content(model=GEMINI_FLASH_MODEL, contents=prompt)
             raw = str(getattr(resp, "text", "") or "").strip()
             raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
             parsed = json.loads(raw)
@@ -788,6 +984,38 @@ Return ONLY JSON:
             _set_attr(root_span, "chat_history_turns", len(chat_history))
             _add_event(history_span, "qa.chat_history.loaded", _history_debug(chat_history))
 
+        if not image_bytes:
+            with traced_span("qa.history_page_lookup", query=_trim(query, 180)) as page_follow_span:
+                history_page = _try_page_lookup_from_history(query, chat_history)
+                _set_attr(page_follow_span, "matched", bool(history_page))
+                if history_page is not None:
+                    _emit_event(
+                        {
+                            "phase": "finalizing",
+                            "message": str(history_page.get("answer", ""))[:180],
+                            "status": "done",
+                            "step_id": "history_page_lookup",
+                            "tool": "history_page_lookup",
+                        }
+                    )
+                    _save_turn(
+                        str(history_page.get("answer", "")),
+                        citations=history_page.get("citations", []) if isinstance(history_page.get("citations"), list) else [],
+                        tool_result=history_page.get("tool_result") if isinstance(history_page.get("tool_result"), dict) else None,
+                        source_file=str(history_page.get("source_file", "chat_history")),
+                    )
+                    return history_page
+
+        with traced_span("qa.build_working_file_context", folder_id=folder_id) as wf_span:
+            working_file_context = _build_working_file_context(folder_id, session_file_ids)
+            _set_attr(wf_span, "working_file_count", len(working_file_context))
+            _set_attr(
+                wf_span,
+                "working_file_ids_preview",
+                ",".join(str(f.get("file_id", "")) for f in working_file_context[:12]),
+            )
+            _set_attr(root_span, "working_file_count", len(working_file_context))
+
         routed_tool_hint = classify_tool(query=query, image_bytes=image_bytes).get("tool", "none")
         with traced_span("qa.orchestrator.plan", query=_trim(query, 220)) as plan_span:
             plan = _run_orchestrator_plan(
@@ -795,6 +1023,7 @@ Return ONLY JSON:
                 turns=chat_history,
                 has_image=bool(image_bytes),
                 routed_tool_hint=routed_tool_hint,
+                working_files=working_file_context,
             )
             _set_attr(plan_span, "grounding_mode", str(plan.get("grounding_mode", "")))
             _set_attr(plan_span, "preferred_tool", str(plan.get("preferred_tool", "")))
@@ -947,6 +1176,72 @@ Return ONLY JSON:
                         "reason": "insufficient_history_context",
                     },
                 )
+            if routed_tool == "search":
+                _emit("Run search tool (retrieval-first)")
+                with traced_span("qa.search_first", query=_trim(query, 220)) as search_span:
+                    from cad_pipeline.tools.search_tool import run_search_tool
+
+                    search_res = run_search_tool(
+                        query=query,
+                        image_bytes=effective_image_bytes,
+                        folder_id=None if session_file_ids is not None else folder_id,
+                        file_id=file_id,
+                        top_n=10,
+                    )
+                    hits_raw = search_res.get("results", []) or []
+                    hits = [h for h in hits_raw if isinstance(h, dict)]
+                    if session_file_ids is not None:
+                        allowed = set(session_file_ids)
+                        hits = [h for h in hits if str(h.get("file_id", "")) in allowed]
+                    _set_attr(search_span, "hits_count", len(hits))
+                    _set_attr(search_span, "retrieval_mode", str(search_res.get("retrieval_mode", "")))
+                    if hits:
+                        page_word = _msg("trang", "ページ", "page")
+                        header = _msg(
+                            f"Tìm thấy {len(hits)} trang liên quan:",
+                            f"関連ページ {len(hits)} 件を見つけました:",
+                            f"Found {len(hits)} relevant pages:",
+                        )
+                        lines = [
+                            f"- **{str(h.get('file_name', h.get('file_id', '')))}** {page_word} {int(h.get('page_number', 0) or 0)}: {str(h.get('short_summary', '') or '')[:120]}"
+                            for h in hits[:10]
+                        ]
+                        answer = "\n".join([header, *lines])
+                        citations = [
+                            {
+                                "file_id": str(h.get("file_id", "")),
+                                "file_name": str(h.get("file_name", h.get("file_id", ""))),
+                                "page_number": int(h.get("page_number", 0) or 0),
+                            }
+                            for h in hits[:8]
+                            if str(h.get("file_id", "")).strip() and int(h.get("page_number", 0) or 0) > 0
+                        ]
+                        pages_used = sorted({int(c["page_number"]) for c in citations})
+                        tool_result = dict(search_res)
+                        tool_result["tool_name"] = "search"
+                        source_file = str(hits[0].get("file_name", hits[0].get("file_id", "")))
+                        _save_turn(
+                            answer,
+                            citations=citations,
+                            tool_result=tool_result,
+                            source_file=source_file,
+                        )
+                        return {
+                            "answer": answer,
+                            "pages_used": pages_used,
+                            "citations": citations,
+                            "images": [],
+                            "tool_result": tool_result,
+                            "source_file": source_file,
+                            "query_type": "qa",
+                        }
+                    _add_event(
+                        search_span,
+                        "qa.search_first.miss",
+                        {"reason": "no_results_after_scope_filter"},
+                    )
+                    # Retrieval-first path misses should continue to page-level reasoning.
+                    force_continue_page_level = True
         allow_image_early_answer = bool(plan.get("allow_image_early_answer", True))
         if allow_image_early_answer and effective_image_bytes and routed_tool == "count":
             _emit("Run image-first count tool")

@@ -316,20 +316,24 @@ def upsert_chat_session_sources(
     session_id: str,
     folder_id: str,
     file_ids: list[str],
+    session_name: str | None = None,
     user_email: str | None = None,
 ) -> None:
     """Persist selected source file ids for one chatbot session."""
     scope_id = f"{user_email}::{session_id}" if user_email else session_id
+    set_fields: dict[str, Any] = {
+        "session_id": session_id,
+        "user_email": user_email,
+        "folder_id": folder_id,
+        "file_ids": file_ids,
+        "updated_at": _now(),
+    }
+    if session_name is not None:
+        set_fields["session_name"] = session_name
     get_db()["chat_sessions"].update_one(
         {"_id": scope_id},
         {
-            "$set": {
-                "session_id": session_id,
-                "user_email": user_email,
-                "folder_id": folder_id,
-                "file_ids": file_ids,
-                "updated_at": _now(),
-            },
+            "$set": set_fields,
             "$setOnInsert": {"created_at": _now()},
         },
         upsert=True,
@@ -397,6 +401,7 @@ def list_user_chat_sessions(user_email: str) -> list[dict]:
             "session_id": str(doc.get("session_id") or folder_id),
             "folder_id": folder_id,
             "file_ids": doc.get("file_ids", []),
+            "session_name": doc.get("session_name"),
             "updated_at": doc.get("updated_at") or doc.get("created_at"),
         }
 
@@ -418,6 +423,7 @@ def list_user_chat_sessions(user_email: str) -> list[dict]:
                 "session_id": folder_id,
                 "folder_id": folder_id,
                 "file_ids": [],
+                "session_name": None,
                 "updated_at": cand_ts,
             }
 

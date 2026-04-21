@@ -42,22 +42,27 @@ Write a structured Markdown report in the SAME LANGUAGE as the user query
 Report structure:
 # {TITLE}
 
-## 概要 / Tóm tắt / Summary
+## Summary
 (2–3 sentences summarising what was found)
 
-## 詳細 / Chi tiết / Details
+## Details
 (Use tables or bullet lists. Include page references.)
 
-## 結果 / Kết quả / Results
+## Results
 (Numerical results, counts, areas, or search hits if available)
 
-## 出典ページ / Trang nguồn / Source Pages
-| ページ / Trang | ファイル / File | 概要 / Tóm tắt |
+## Source Pages
+| Page | File | Summary |
 |---|---|---|
 | ... | ... | ... |
 
 Only include sections that have content. Be concise and accurate.
 Do NOT add any preamble — output the Markdown directly.
+Important quality rules:
+- Use section titles and prose in ONLY one language (the user's language). Do not mix multilingual labels in headings.
+- Use clean Markdown bullets with "-" (avoid "*").
+- For tables, output valid Markdown table rows only (no broken pipes, no placeholder separator duplicates).
+- Do not include raw prompt artifacts like "chat_history" in the final prose; instead explain concrete findings.
 """
 
 
@@ -324,6 +329,8 @@ Rules:
 - Build tables from provided inputs only (no hallucinations).
 - Prefer numeric types for numeric values.
 - Keep sheet_name <= 25 chars.
+- Keep column names concise and stable (no markdown, no multilingual slash labels).
+- Return at least one meaningful row; avoid placeholder-only rows unless there is truly no extractable data.
 Output raw JSON only."""
 
     last_err: Exception | None = None
@@ -393,7 +400,8 @@ def run_report_excel(
     """
     try:
         from openpyxl import Workbook  # type: ignore
-        from openpyxl.styles import Font, PatternFill  # type: ignore
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side  # type: ignore
+        from openpyxl.utils import get_column_letter  # type: ignore
     except ImportError:
         return {"format": "excel", "success": False,
                 "error": "openpyxl not installed.", "file_path": "", "file_name": ""}
@@ -425,8 +433,12 @@ def run_report_excel(
     wb = Workbook()
     _hdr = Font(bold=True, color="FFFFFF")
     _hdr_fill = PatternFill("solid", fgColor="1A3A6B")
+    _sub_hdr_fill = PatternFill("solid", fgColor="2D5A88")
+    _alt_fill = PatternFill("solid", fgColor="F4F7FB")
+    _thin = Side(style="thin", color="D0D7E2")
+    _border = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
 
-    # ── Keep only ONE main data sheet (the last Gemini table) ─────────────
+    # ── Keep one main data sheet, plus summary/source sheets ───────────────
     tables = report_json.get("tables", []) if isinstance(report_json, dict) else []
 
     if not tables:
@@ -447,21 +459,90 @@ def run_report_excel(
         cols = ["Value"]
         rows = [{"Value": "No data"}]
 
-    ws = wb.active
-    ws.title = _safe_sheet_name(str(table.get("sheet_name", "Data")), set())
+    used_sheet_names: set[str] = set()
+
+    ws_summary = wb.active
+    ws_summary.title = _safe_sheet_name("Summary", used_sheet_names)
+    ws_summary["A1"] = report_json.get("title", f"CAD Report — {query[:80]}")
+    ws_summary["A1"].font = Font(bold=True, size=14, color="1A3A6B")
+    ws_summary["A3"] = "Query"
+    ws_summary["B3"] = query
+    ws_summary["A4"] = "Source Strategy"
+    ws_summary["B4"] = str(report_json.get("source_strategy", "hybrid"))
+    ws_summary["A5"] = "Decision Note"
+    ws_summary["B5"] = str(report_json.get("decision_note", ""))
+    ws_summary["A6"] = "Summary"
+    ws_summary["B6"] = str(report_json.get("summary", ""))
+    for row in range(3, 7):
+        ws_summary[f"A{row}"].font = Font(bold=True, color="FFFFFF")
+        ws_summary[f"A{row}"].fill = _sub_hdr_fill
+        ws_summary[f"A{row}"].border = _border
+        ws_summary[f"B{row}"].border = _border
+        ws_summary[f"B{row}"].alignment = Alignment(vertical="top", wrap_text=True)
+    ws_summary.column_dimensions["A"].width = 20
+    ws_summary.column_dimensions["B"].width = 100
+
+    ws = wb.create_sheet(_safe_sheet_name(str(table.get("sheet_name", "Data")), used_sheet_names))
     ws.append(cols)
     for cell in ws[1]:
         cell.font = _hdr
         cell.fill = _hdr_fill
+        cell.border = _border
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     for row in rows:
         if isinstance(row, dict):
             ws.append([row.get(c, "") for c in cols])
         else:
             ws.append(["" for _ in cols])
 
+    for ridx in range(2, ws.max_row + 1):
+        for cidx in range(1, ws.max_column + 1):
+            cell = ws.cell(ridx, cidx)
+            cell.border = _border
+            if ridx % 2 == 0:
+                cell.fill = _alt_fill
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+
     for i, col in enumerate(cols, start=1):
-        letter = chr(64 + i) if i <= 26 else f"A{chr(64 + i - 26)}"
-        ws.column_dimensions[letter].width = min(max(len(str(col)) + 6, 14), 42)
+        letter = get_column_letter(i)
+        max_len = len(str(col))
+        for ridx in range(2, min(ws.max_row, 302) + 1):
+            max_len = max(max_len, len(str(ws.cell(ridx, i).value or "")))
+        ws.column_dimensions[letter].width = min(max(max_len + 3, 14), 50)
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+    page_rows = report_json.get("pages", []) if isinstance(report_json, dict) else []
+    if isinstance(page_rows, list) and page_rows:
+        ws_src = wb.create_sheet(_safe_sheet_name("Source Pages", used_sheet_names))
+        src_cols = ["Page", "File", "Summary"]
+        ws_src.append(src_cols)
+        for cell in ws_src[1]:
+            cell.font = _hdr
+            cell.fill = _hdr_fill
+            cell.border = _border
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        for entry in page_rows[:500]:
+            if not isinstance(entry, dict):
+                continue
+            ws_src.append([
+                entry.get("page_number", ""),
+                entry.get("file_name", ""),
+                entry.get("summary", ""),
+            ])
+        for ridx in range(2, ws_src.max_row + 1):
+            for cidx in range(1, ws_src.max_column + 1):
+                cell = ws_src.cell(ridx, cidx)
+                cell.border = _border
+                if ridx % 2 == 0:
+                    cell.fill = _alt_fill
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+        ws_src.column_dimensions["A"].width = 10
+        ws_src.column_dimensions["B"].width = 44
+        ws_src.column_dimensions["C"].width = 90
+        ws_src.freeze_panes = "A2"
+        ws_src.auto_filter.ref = ws_src.dimensions
 
     try:
         wb.save(str(xlsx_path))

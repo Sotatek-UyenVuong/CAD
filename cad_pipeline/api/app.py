@@ -774,6 +774,7 @@ class CreateFolderRequest(BaseModel):
 class UpdateChatSessionSourcesRequest(BaseModel):
     folder_id: str | None = None
     file_ids: list[str]
+    session_name: str | None = None
 
 
 @app.post("/folders", status_code=201)
@@ -971,6 +972,7 @@ def get_chat_session_state(session_id: str, _user: dict = Depends(get_current_us
         "session_id": str(doc.get("session_id", session_id)),
         "folder_id": doc.get("folder_id", session_id),
         "file_ids": doc.get("file_ids", []),
+        "session_name": doc.get("session_name"),
         "exists": True,
     }
 
@@ -987,17 +989,19 @@ def list_chat_sessions(_user: dict = Depends(get_current_user)):
         folder_id = str(row.get("folder_id") or session_id)
         folder = mongo.get_folder(folder_id) or {}
         file_ids = row.get("file_ids", []) or []
+        session_name = str(row.get("session_name") or "").strip()
         if folder:
-            folder_name = folder.get("name", folder_id)
+            folder_name = session_name or folder.get("name", folder_id)
             file_count = len(mongo.list_files(folder_id))
         else:
-            folder_name = session_id
+            folder_name = session_name or session_id
             file_count = len(file_ids)
         result.append(
             {
                 "session_id": session_id,
                 "folder_id": folder_id,
                 "folder_name": folder_name,
+                "session_name": session_name or None,
                 "file_count": file_count,
                 "updated_at": row.get("updated_at"),
             }
@@ -1037,9 +1041,16 @@ def update_chat_session_sources(
         session_id=session_id,
         folder_id=folder_id,
         file_ids=file_ids,
+        session_name=(req.session_name or "").strip() or None,
         user_email=_user["email"],
     )
-    return {"session_id": session_id, "folder_id": folder_id, "file_ids": file_ids, "exists": True}
+    return {
+        "session_id": session_id,
+        "folder_id": folder_id,
+        "file_ids": file_ids,
+        "session_name": (req.session_name or "").strip() or None,
+        "exists": True,
+    }
 
 
 # ── Tools ──────────────────────────────────────────────────────────────────

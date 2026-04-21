@@ -35,6 +35,40 @@ from cad_pipeline.agents.language_utils import detect_query_language, language_l
 MAX_SELECTED_PAGES = 5
 
 
+def _is_page_lookup_query(query: str) -> bool:
+    q = (query or "").strip().lower()
+    if not q:
+        return False
+    hints = [
+        "page nào",
+        "trang nào",
+        "trang mấy",
+        "ở page",
+        "ở trang",
+        "which page",
+        "what page",
+        "ページ",
+        "何ページ",
+    ]
+    return any(h in q for h in hints)
+
+
+def _rank_pages_by_summary_overlap(query: str, pages: list[dict]) -> list[dict]:
+    q_norm = re.sub(r"\s+", " ", (query or "").lower()).strip()
+    # Keep multi-lingual token extraction simple and robust.
+    tokens = [t for t in re.findall(r"\w+", q_norm) if len(t) >= 2]
+    if not tokens:
+        return pages
+    scored: list[tuple[int, dict]] = []
+    for p in pages:
+        summary = str(p.get("short_summary", "") or "").lower()
+        score = sum(1 for t in tokens if t in summary)
+        scored.append((score, p))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    ranked = [p for s, p in scored if s > 0]
+    return ranked or pages
+
+
 def _build_citations_from_pages(result_pages_used: list[int], selected_pages: list[dict]) -> list[dict]:
     citations: list[dict] = []
     seen: set[tuple[str, int]] = set()
@@ -371,13 +405,43 @@ Reply ONLY as JSON:
                 answer_lines.append(f"- **{h['file_name']}** {page_word} {h['page_number']} (score {h['vector_score']:.3f}): {h['short_summary'][:120]}")
             result["answer"] = "\n".join(answer_lines)
         else:
-            result["answer"] = (
-                "Không tìm thấy trang liên quan."
-                if lang_code == "vi"
-                else "関連ページが見つかりませんでした。"
-                if lang_code == "ja"
-                else "No relevant pages found."
-            )
+            if _is_page_lookup_query(query):
+                fallback_pages = _rank_pages_by_summary_overlap(query, selected_pages)[:3]
+                if fallback_pages:
+                    page_word = "trang" if lang_code == "vi" else "ページ" if lang_code == "ja" else "page"
+                    intro = (
+                        "Không thấy kết quả semantic đủ rõ, nhưng theo tóm tắt trang hiện có, nội dung có thể nằm ở:"
+                        if lang_code == "vi"
+                        else "セマンティック検索で十分な一致はありませんでしたが、ページ要約からは次のページが有力です:"
+                        if lang_code == "ja"
+                        else "No confident semantic match was found, but based on available page summaries, the content is likely on:"
+                    )
+                    lines = [
+                        f"- **{p.get('file_name', p.get('file_id', ''))}** {page_word} {p.get('page_number', '?')}: {str(p.get('short_summary', '') or '')[:120]}"
+                        for p in fallback_pages
+                    ]
+                    result["answer"] = "\n".join([intro, *lines])
+                    result["pages_used"] = [
+                        int(p.get("page_number"))
+                        for p in fallback_pages
+                        if isinstance(p.get("page_number"), int) or str(p.get("page_number", "")).isdigit()
+                    ]
+                else:
+                    result["answer"] = (
+                        "Không tìm thấy trang liên quan."
+                        if lang_code == "vi"
+                        else "関連ページが見つかりませんでした。"
+                        if lang_code == "ja"
+                        else "No relevant pages found."
+                    )
+            else:
+                result["answer"] = (
+                    "Không tìm thấy trang liên quan."
+                    if lang_code == "vi"
+                    else "関連ページが見つかりませんでした。"
+                    if lang_code == "ja"
+                    else "No relevant pages found."
+                )
 
     if need_tool == "count":
         from cad_pipeline.tools.count_tool import run_count_tool

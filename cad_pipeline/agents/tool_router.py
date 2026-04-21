@@ -39,7 +39,6 @@ Available tools:
   none         — general text Q&A (no specialist tool needed)
 
 Rules:
-- If ONLY an image is provided with no text → "search"
 - If query asks "how many pages/drawings/files/documents/lists" (metadata counting) → "none"
 - If query mentions counting symbols/equipment/objects in drawing content → "count"
 - If query mentions area/m²/diện tích → "area"  
@@ -64,42 +63,7 @@ def classify_tool(
     Returns {"tool": str, "reason": str, "source": "gemini"|"default"}.
     Always returns a valid result (never raises).
     """
-    # Default when no input at all
-    if not query and not image_bytes:
-        return {"tool": "none", "reason": "No input provided.", "source": "default"}
-
-    # Image only → search
-    if image_bytes and not query:
-        return {"tool": "search", "reason": "Image provided without text → semantic search.", "source": "default"}
-
-    # Deterministic guardrails before LLM routing:
-    # "How many documents/pages/drawings" is metadata counting, not symbol counting.
-    if query:
-        q = query.lower()
-        if any(k in q for k in ["docx", "word", ".docx", "báo cáo word", "bao cao word"]):
-            return {
-                "tool": "report_docx",
-                "reason": "Explicit DOCX/Word export request.",
-                "source": "default",
-            }
-        wants_count = any(k in q for k in ["bao nhiêu", "how many", "何個", "いくつ", "số lượng"])
-        metadata_targets = [
-            "bảng vẽ", "ban ve", "drawing", "drawings", "sheet", "sheets",
-            "trang", "page", "pages", "tài liệu", "tai lieu", "document", "documents",
-            "file", "files", "list", "danh sách", "一覧", "図面リスト",
-        ]
-        symbol_targets = [
-            "symbol", "ký hiệu", "ki hieu", "block", "text", "insert", "thiết bị", "thiet bi",
-            "đèn", "den", "công tắc", "cong tac", "ổ cắm", "o cam", "van", "valve",
-        ]
-        if wants_count and any(k in q for k in metadata_targets) and not any(k in q for k in symbol_targets):
-            return {
-                "tool": "none",
-                "reason": "Metadata counting query (documents/pages/drawings), not symbol counting.",
-                "source": "default",
-            }
-
-    # Gemini Flash for ambiguous or image+text cases
+    # LLM-first routing for all non-empty input.
     try:
         from google import genai  # type: ignore
         from google.genai import types as _gt  # type: ignore
@@ -112,6 +76,8 @@ def classify_tool(
             contents.append(_gt.Part.from_bytes(data=image_bytes, mime_type="image/png"))
         if query:
             contents.append(f'User message: "{query}"')
+        elif not image_bytes:
+            contents.append('User message: ""')
 
         response = client.models.generate_content(model=_model, contents=contents)
         raw = response.text.strip()
@@ -127,6 +93,6 @@ def classify_tool(
     except Exception as exc:
         return {
             "tool": "none",
-            "reason": f"Gemini unavailable ({exc}); fallback to none.",
+            "reason": f"LLM unavailable ({exc}); fallback to none.",
             "source": "default",
         }
