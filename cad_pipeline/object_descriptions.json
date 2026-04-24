@@ -1,0 +1,1304 @@
+{
+  "version": "recreated-expanded-94-2026-04-22",
+  "notes": "Expanded baseline to 94 objects using symbol_groups labels and recovered manual entries.",
+  "objects": [
+    {
+      "id": "door",
+      "name_vi": "Cửa đi",
+      "name_en": "Door",
+      "name_ja": "ドア",
+      "category": "door",
+      "description": "Ký hiệu cửa đi trên mặt bằng kiến trúc, thường gắn với cung mở cửa hoặc cánh cửa quay.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Đường tường bị ngắt + cánh cửa + cung tròn biểu diễn hướng mở",
+      "exclude_hints": [
+        "Không phải cửa sổ",
+        "Không phải ký hiệu lối thoát hiểm dạng annotation"
+      ]
+    },
+    {
+      "id": "sliding_door",
+      "name_vi": "Cửa lùa",
+      "name_en": "Sliding Door",
+      "name_ja": "引き戸",
+      "category": "door",
+      "description": "Cửa trượt theo ray, thường vẽ 2 hoặc nhiều cánh chồng nhau theo phương ngang/dọc.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Hai đường cánh song song chạy theo tường, không có cung mở tròn",
+      "exclude_hints": [
+        "Không phải cửa quay"
+      ]
+    },
+    {
+      "id": "window",
+      "name_vi": "Cửa sổ",
+      "name_en": "Window",
+      "name_ja": "窓",
+      "category": "window",
+      "description": "Ký hiệu cửa sổ trên tường ngoài hoặc tường ngăn, thường là đoạn mở mảnh trong lớp tường.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Khe mở trên tường với nét mảnh hoặc cụm đường song song",
+      "exclude_hints": [
+        "Không phải cửa đi"
+      ]
+    },
+    {
+      "id": "stair",
+      "name_vi": "Cầu thang",
+      "name_en": "Stair",
+      "name_ja": "階段",
+      "category": "stair",
+      "description": "Cụm bậc thang liên tiếp có mũi tên hướng lên/xuống hoặc ký hiệu tầng.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Nhiều bậc song song + mũi tên hướng di chuyển",
+      "exclude_hints": [
+        "Không phải thang máy"
+      ]
+    },
+    {
+      "id": "elevator",
+      "name_vi": "Thang máy",
+      "name_en": "Elevator",
+      "name_ja": "エレベーター",
+      "category": "equipment",
+      "description": "Giếng thang máy trong lõi công trình, thường có nhãn EV và hình hộp chữ nhật.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Ô chữ nhật khép kín, thường có text EV/ELV hoặc cửa tầng",
+      "exclude_hints": [
+        "Không phải cầu thang bộ",
+        "Không phải shaft kỹ thuật không có nhãn EV"
+      ]
+    },
+    {
+      "id": "escalator",
+      "name_vi": "Thang cuốn",
+      "name_en": "Escalator",
+      "name_ja": "エスカレーター",
+      "category": "equipment",
+      "description": "Ký hiệu thang cuốn, thường dạng dải song song có mũi tên lên/xuống.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Dải dài song song, bo cong đầu hoặc mũi tên hướng",
+      "exclude_hints": [
+        "Không phải cầu thang bộ"
+      ]
+    },
+    {
+      "id": "toilet",
+      "name_vi": "Bồn cầu",
+      "name_en": "Toilet",
+      "name_ja": "便器",
+      "category": "equipment",
+      "description": "Thiết bị vệ sinh trong phòng WC, thường có hình oval/chữ nhật bo góc.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Oval hoặc bo tròn có két nước phía sau",
+      "exclude_hints": [
+        "Không phải lavabo",
+        "Không phải urinal"
+      ]
+    },
+    {
+      "id": "squat_toilet",
+      "name_vi": "Bồn cầu xổm",
+      "name_en": "Squat Toilet",
+      "name_ja": "和式便器",
+      "category": "equipment",
+      "description": "Thiết bị vệ sinh kiểu ngồi xổm, hình học thường đơn giản và thấp.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Dạng máng/chữ nhật gọn, không giống bồn cầu bệt",
+      "exclude_hints": [
+        "Không phải bồn cầu bệt tiêu chuẩn"
+      ]
+    },
+    {
+      "id": "hand_wash_basin",
+      "name_vi": "Lavabo rửa tay",
+      "name_en": "Hand Wash Basin",
+      "name_ja": "手洗い器",
+      "category": "equipment",
+      "description": "Chậu rửa tay trong WC/khu rửa, thường là hình tròn hoặc chữ nhật bo góc kèm vòi.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Chậu nhỏ dạng tròn/chữ nhật + vị trí vòi",
+      "exclude_hints": [
+        "Không phải bồn rửa bếp"
+      ]
+    },
+    {
+      "id": "sink",
+      "name_vi": "Bồn rửa",
+      "name_en": "Sink",
+      "name_ja": "流し台",
+      "category": "equipment",
+      "description": "Bồn rửa khu bếp hoặc utility, thường đi cùng mặt bàn hoặc cụm bếp.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Ô chậu chữ nhật + line thoát nước, gần khu bếp",
+      "exclude_hints": [
+        "Không phải hand_wash_basin trong WC"
+      ]
+    },
+    {
+      "id": "bathtub",
+      "name_vi": "Bồn tắm",
+      "name_en": "Bathtub",
+      "name_ja": "浴槽",
+      "category": "equipment",
+      "description": "Bồn tắm trong khu vệ sinh, hình chữ nhật dài hoặc bo tròn.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Hình chữ nhật dài, cạnh bo tròn, nằm trong phòng tắm",
+      "exclude_hints": [
+        "Không phải bồn cầu"
+      ]
+    },
+    {
+      "id": "kitchen_counter",
+      "name_vi": "Quầy bếp",
+      "name_en": "Kitchen Counter",
+      "name_ja": "キッチンカウンター",
+      "category": "furniture",
+      "description": "Cụm bàn/quầy bếp, thường nối với bồn rửa và thiết bị nấu.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Dải chữ nhật dài áp tường hoặc dạng chữ L",
+      "exclude_hints": [
+        "Không phải tủ rời"
+      ]
+    },
+    {
+      "id": "refrigerator",
+      "name_vi": "Tủ lạnh",
+      "name_en": "Refrigerator",
+      "name_ja": "冷蔵庫",
+      "category": "home_appliance",
+      "description": "Thiết bị tủ lạnh trong bếp, thường ký hiệu FR hoặc hình khối đứng.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Ô chữ nhật đứng gần bếp, có thể có ký hiệu FR",
+      "exclude_hints": [
+        "Không phải tủ kho"
+      ]
+    },
+    {
+      "id": "washing_machine",
+      "name_vi": "Máy giặt",
+      "name_en": "Washing Machine",
+      "name_ja": "洗濯機",
+      "category": "home_appliance",
+      "description": "Thiết bị giặt đặt trong utility/loggia, thường có ký hiệu máy tròn hoặc vuông.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Hình vuông/ tròn gọn trong khu giặt",
+      "exclude_hints": [
+        "Không phải hand_wash_basin"
+      ]
+    },
+    {
+      "id": "air_conditioner",
+      "name_vi": "Điều hòa",
+      "name_en": "Air Conditioner",
+      "name_ja": "エアコン",
+      "category": "equipment",
+      "description": "Thiết bị điều hòa/FCU trong phòng hoặc ban công kỹ thuật.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Ký hiệu thiết bị HVAC dạng hộp nhỏ với text AC/FCU",
+      "exclude_hints": [
+        "Không phải đèn"
+      ]
+    },
+    {
+      "id": "emergency_light",
+      "name_vi": "Đèn sự cố",
+      "name_en": "Emergency Light",
+      "name_ja": "非常照明",
+      "category": "lighting",
+      "description": "Đèn chiếu sáng khẩn cấp đặt tại hành lang, lối thoát nạn.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Ký hiệu đèn kèm annotation liên quan very/emergency",
+      "exclude_hints": [
+        "Không phải đèn trang trí thông thường"
+      ]
+    },
+    {
+      "id": "exit_sign",
+      "name_vi": "Biển thoát nạn",
+      "name_en": "Exit Sign",
+      "name_ja": "誘導灯",
+      "category": "lighting",
+      "description": "Biển chỉ dẫn lối thoát nạn tại vị trí cửa hoặc hành lang thoát hiểm.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Ký hiệu bảng nhỏ gần cửa/hành lang với mũi tên",
+      "exclude_hints": [
+        "Không phải text annotation chung"
+      ]
+    },
+    {
+      "id": "room_label",
+      "name_vi": "Nhãn phòng",
+      "name_en": "Room Label",
+      "name_ja": "室名",
+      "category": "room_label",
+      "description": "Text chú thích tên phòng, không phải fixture vật lý.",
+      "view": "annotation",
+      "shape_hint": "Chuỗi text nằm giữa phòng (LDK, BED, WC...)",
+      "exclude_hints": [
+        "Không đếm như vật thể"
+      ]
+    },
+    {
+      "id": "storage",
+      "name_vi": "Kho / tủ chứa",
+      "name_en": "Storage",
+      "name_ja": "収納",
+      "category": "storage",
+      "description": "Khu lưu trữ hoặc tủ đồ, thường ký hiệu Sto/収納/CL.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Khoang nhỏ hình chữ nhật có nhãn lưu trữ",
+      "exclude_hints": [
+        "Không phải phòng chính"
+      ]
+    },
+    {
+      "id": "shaft_ps",
+      "name_vi": "Shaft PS",
+      "name_en": "Plumbing Shaft",
+      "name_ja": "PS",
+      "category": "utility_shaft",
+      "description": "Shaft kỹ thuật đường ống nước, thường ký hiệu PS.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Ô kỹ thuật nhỏ, text PS",
+      "exclude_hints": [
+        "Không phải EV shaft"
+      ]
+    },
+    {
+      "id": "shaft_eps",
+      "name_vi": "Shaft EPS",
+      "name_en": "Electrical Shaft",
+      "name_ja": "EPS",
+      "category": "utility_shaft",
+      "description": "Shaft kỹ thuật điện, thường ký hiệu EPS.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Ô kỹ thuật nhỏ, text EPS",
+      "exclude_hints": [
+        "Không phải phòng điện lớn"
+      ]
+    },
+    {
+      "id": "dimension_annotation",
+      "name_vi": "Kích thước chú thích",
+      "name_en": "Dimension Annotation",
+      "name_ja": "寸法注記",
+      "category": "annotation",
+      "description": "Đường kích thước và text đo đạc (mm/m), dùng cho thiết kế chứ không phải object.",
+      "view": "annotation",
+      "shape_hint": "Đường kích thước + mũi tên + text số",
+      "exclude_hints": [
+        "Không đếm như room/object"
+      ]
+    },
+    {
+      "id": "title_block",
+      "name_vi": "Khung tên bản vẽ",
+      "name_en": "Title Block",
+      "name_ja": "タイトルブロック",
+      "category": "annotation",
+      "description": "Khung tên ở mép bản vẽ chứa drawing_no, drawing_title, project, scale.",
+      "view": "annotation",
+      "shape_hint": "Cụm bảng text ở mép hoặc góc bản vẽ",
+      "exclude_hints": [
+        "Không phải nội dung không gian trong mặt bằng"
+      ]
+    },
+    {
+      "id": "apt_unit_floor_plan",
+      "name_vi": "Bản vẽ mặt bằng căn hộ (住戸タイプ)",
+      "name_en": "Apartment Unit Floor Plan",
+      "name_ja": "住戸平面図 / 住戸タイプ図",
+      "category": "room_label",
+      "description": "Trong bản vẽ 住戸専有面積算定図, mỗi loại căn hộ là một khối riêng. Từ trên xuống gồm tiêu đề loại căn, floor plan chính chia phòng con và bảng diện tích phía dưới.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Hình chữ nhật lớn chứa các hình chữ nhật con có nhãn ①②③ hoặc A/B/C; tiêu đề góc trên có XXタイプ",
+      "exclude_hints": [
+        "Không bao gồm bảng diện tích ở phía dưới nếu chỉ cần bao floor plan",
+        "Không nhầm với sơ đồ nhỏ dạng outline ở góc trên",
+        "Không nhầm với ghi chú chi tiết terrace"
+      ]
+    },
+    {
+      "id": "area_schedule_table",
+      "name_vi": "Bảng tính diện tích căn hộ (専有面積表)",
+      "name_en": "Apartment Area Schedule Table",
+      "name_ja": "専有面積算定表",
+      "category": "annotation",
+      "description": "Bảng diện tích dưới floor plan với tiêu đề XXタイプ 専有面積, có các dòng room name, công thức và tổng m².",
+      "view": "bảng 2D",
+      "shape_hint": "Bảng hình chữ nhật có grid, dòng tổng in đậm và các dòng phụ porch/balcony/terrace",
+      "exclude_hints": [
+        "Không nhầm với floor plan (bảng là text/số thuần)",
+        "Không nhầm với title block",
+        "Mỗi loại căn thường có 1 bảng riêng"
+      ]
+    },
+    {
+      "id": "apt_unit_100A",
+      "name_vi": "Apt Unit 100a",
+      "name_en": "Apt Unit 100a",
+      "name_ja": "apt_unit_100A",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_30A",
+      "name_vi": "Apt Unit 30a",
+      "name_en": "Apt Unit 30a",
+      "name_ja": "apt_unit_30A",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_30B",
+      "name_vi": "Apt Unit 30b",
+      "name_en": "Apt Unit 30b",
+      "name_ja": "apt_unit_30B",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_30C",
+      "name_vi": "Apt Unit 30c",
+      "name_en": "Apt Unit 30c",
+      "name_ja": "apt_unit_30C",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_40A",
+      "name_vi": "Apt Unit 40a",
+      "name_en": "Apt Unit 40a",
+      "name_ja": "apt_unit_40A",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_40B",
+      "name_vi": "Apt Unit 40b",
+      "name_en": "Apt Unit 40b",
+      "name_ja": "apt_unit_40B",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_50A",
+      "name_vi": "Apt Unit 50a",
+      "name_en": "Apt Unit 50a",
+      "name_ja": "apt_unit_50A",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_50B",
+      "name_vi": "Apt Unit 50b",
+      "name_en": "Apt Unit 50b",
+      "name_ja": "apt_unit_50B",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_50C",
+      "name_vi": "Apt Unit 50c",
+      "name_en": "Apt Unit 50c",
+      "name_ja": "apt_unit_50C",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_50D",
+      "name_vi": "Apt Unit 50d",
+      "name_en": "Apt Unit 50d",
+      "name_ja": "apt_unit_50D",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_60A",
+      "name_vi": "Apt Unit 60a",
+      "name_en": "Apt Unit 60a",
+      "name_ja": "apt_unit_60A",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_65A",
+      "name_vi": "Apt Unit 65a",
+      "name_en": "Apt Unit 65a",
+      "name_ja": "apt_unit_65A",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_70A",
+      "name_vi": "Apt Unit 70a",
+      "name_en": "Apt Unit 70a",
+      "name_ja": "apt_unit_70A",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_70B",
+      "name_vi": "Apt Unit 70b",
+      "name_en": "Apt Unit 70b",
+      "name_ja": "apt_unit_70B",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_70C",
+      "name_vi": "Apt Unit 70c",
+      "name_en": "Apt Unit 70c",
+      "name_ja": "apt_unit_70C",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_70D",
+      "name_vi": "Apt Unit 70d",
+      "name_en": "Apt Unit 70d",
+      "name_ja": "apt_unit_70D",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_70E",
+      "name_vi": "Apt Unit 70e",
+      "name_en": "Apt Unit 70e",
+      "name_ja": "apt_unit_70E",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_70F",
+      "name_vi": "Apt Unit 70f",
+      "name_en": "Apt Unit 70f",
+      "name_ja": "apt_unit_70F",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_70G",
+      "name_vi": "Apt Unit 70g",
+      "name_en": "Apt Unit 70g",
+      "name_ja": "apt_unit_70G",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_70H",
+      "name_vi": "Apt Unit 70h",
+      "name_en": "Apt Unit 70h",
+      "name_ja": "apt_unit_70H",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_75A",
+      "name_vi": "Apt Unit 75a",
+      "name_en": "Apt Unit 75a",
+      "name_ja": "apt_unit_75A",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_85A",
+      "name_vi": "Apt Unit 85a",
+      "name_en": "Apt Unit 85a",
+      "name_ja": "apt_unit_85A",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_85B",
+      "name_vi": "Apt Unit 85b",
+      "name_en": "Apt Unit 85b",
+      "name_ja": "apt_unit_85B",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_P-105",
+      "name_vi": "Apt Unit P 105",
+      "name_en": "Apt Unit P 105",
+      "name_ja": "apt_unit_P-105",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_P-110",
+      "name_vi": "Apt Unit P 110",
+      "name_en": "Apt Unit P 110",
+      "name_ja": "apt_unit_P-110",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_P-80",
+      "name_vi": "Apt Unit P 80",
+      "name_en": "Apt Unit P 80",
+      "name_ja": "apt_unit_P-80",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_P-85",
+      "name_vi": "Apt Unit P 85",
+      "name_en": "Apt Unit P 85",
+      "name_ja": "apt_unit_P-85",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_P-90A",
+      "name_vi": "Apt Unit P 90a",
+      "name_en": "Apt Unit P 90a",
+      "name_ja": "apt_unit_P-90A",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_P-90B",
+      "name_vi": "Apt Unit P 90b",
+      "name_en": "Apt Unit P 90b",
+      "name_ja": "apt_unit_P-90B",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "apt_unit_P-95",
+      "name_vi": "Apt Unit P 95",
+      "name_en": "Apt Unit P 95",
+      "name_ja": "apt_unit_P-95",
+      "category": "room_label",
+      "description": "CAD symbol in group 'apartment_unit': Apartment unit layout blocks.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows apartment_unit family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "ac_indoor_unit",
+      "name_vi": "Cửa",
+      "name_en": "Ac Indoor Unit",
+      "name_ja": "ac_indoor_unit",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_L_corner",
+      "name_vi": "Cửa",
+      "name_en": "Door L Corner",
+      "name_ja": "door_L_corner",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_bifold",
+      "name_vi": "Cửa",
+      "name_en": "Door Bifold",
+      "name_ja": "door_bifold",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_bolt_detail",
+      "name_vi": "Cửa",
+      "name_en": "Door Bolt Detail",
+      "name_ja": "door_bolt_detail",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_closer",
+      "name_vi": "Cửa",
+      "name_en": "Door Closer",
+      "name_ja": "door_closer",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_double_swing",
+      "name_vi": "Cửa",
+      "name_en": "Door Double Swing",
+      "name_ja": "door_double_swing",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_double_swing_detail",
+      "name_vi": "Cửa",
+      "name_en": "Door Double Swing Detail",
+      "name_ja": "door_double_swing_detail",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_frame",
+      "name_vi": "Cửa",
+      "name_en": "Door Frame",
+      "name_ja": "door_frame",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_frame_corner",
+      "name_vi": "Cửa",
+      "name_en": "Door Frame Corner",
+      "name_ja": "door_frame_corner",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_frame_detail",
+      "name_vi": "Cửa",
+      "name_en": "Door Frame Detail",
+      "name_ja": "door_frame_detail",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_frame_double_line",
+      "name_vi": "Cửa",
+      "name_en": "Door Frame Double Line",
+      "name_ja": "door_frame_double_line",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_frame_post",
+      "name_vi": "Cửa",
+      "name_en": "Door Frame Post",
+      "name_ja": "door_frame_post",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_frame_section",
+      "name_vi": "Cửa",
+      "name_en": "Door Frame Section",
+      "name_ja": "door_frame_section",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_frame_thin",
+      "name_vi": "Cửa",
+      "name_en": "Door Frame Thin",
+      "name_ja": "door_frame_thin",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_generic",
+      "name_vi": "Cửa",
+      "name_en": "Door Generic",
+      "name_ja": "door_generic",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_glass_panel_3x3",
+      "name_vi": "Cửa",
+      "name_en": "Door Glass Panel 3x3",
+      "name_ja": "door_glass_panel_3x3",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_handle_pair",
+      "name_vi": "Cửa",
+      "name_en": "Door Handle Pair",
+      "name_ja": "door_handle_pair",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_handle_sliding",
+      "name_vi": "Cửa",
+      "name_en": "Door Handle Sliding",
+      "name_ja": "door_handle_sliding",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_hardware",
+      "name_vi": "Cửa",
+      "name_en": "Door Hardware",
+      "name_ja": "door_hardware",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_jamb_pair",
+      "name_vi": "Cửa",
+      "name_en": "Door Jamb Pair",
+      "name_ja": "door_jamb_pair",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_label",
+      "name_vi": "Cửa",
+      "name_en": "Door Label",
+      "name_ja": "door_label",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_latch_roller",
+      "name_vi": "Cửa",
+      "name_en": "Door Latch Roller",
+      "name_ja": "door_latch_roller",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_lock_mechanism",
+      "name_vi": "Cửa",
+      "name_en": "Door Lock Mechanism",
+      "name_ja": "door_lock_mechanism",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_motor_actuated",
+      "name_vi": "Cửa",
+      "name_en": "Door Motor Actuated",
+      "name_ja": "door_motor_actuated",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_open",
+      "name_vi": "Cửa",
+      "name_en": "Door Open",
+      "name_ja": "door_open",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_overhead",
+      "name_vi": "Cửa",
+      "name_en": "Door Overhead",
+      "name_ja": "door_overhead",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_panel_arrow",
+      "name_vi": "Cửa",
+      "name_en": "Door Panel Arrow",
+      "name_ja": "door_panel_arrow",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_panel_diagonal",
+      "name_vi": "Cửa",
+      "name_en": "Door Panel Diagonal",
+      "name_ja": "door_panel_diagonal",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_panel_narrow",
+      "name_vi": "Cửa",
+      "name_en": "Door Panel Narrow",
+      "name_ja": "door_panel_narrow",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_roller_double",
+      "name_vi": "Cửa",
+      "name_en": "Door Roller Double",
+      "name_ja": "door_roller_double",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_roller_shutter",
+      "name_vi": "Cửa",
+      "name_en": "Door Roller Shutter",
+      "name_ja": "door_roller_shutter",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_sill_profile",
+      "name_vi": "Cửa",
+      "name_en": "Door Sill Profile",
+      "name_ja": "door_sill_profile",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_single_narrow",
+      "name_vi": "Cửa",
+      "name_en": "Door Single Narrow",
+      "name_ja": "door_single_narrow",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_single_panel",
+      "name_vi": "Cửa",
+      "name_en": "Door Single Panel",
+      "name_ja": "door_single_panel",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_single_swing",
+      "name_vi": "Cửa",
+      "name_en": "Door Single Swing",
+      "name_ja": "door_single_swing",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_single_swing_detail",
+      "name_vi": "Cửa",
+      "name_en": "Door Single Swing Detail",
+      "name_ja": "door_single_swing_detail",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_sliding",
+      "name_vi": "Cửa",
+      "name_en": "Door Sliding",
+      "name_ja": "door_sliding",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_stop_guide",
+      "name_vi": "Cửa",
+      "name_en": "Door Stop Guide",
+      "name_ja": "door_stop_guide",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    },
+    {
+      "id": "door_strike_plate",
+      "name_vi": "Cửa",
+      "name_en": "Door Strike Plate",
+      "name_ja": "door_strike_plate",
+      "category": "door",
+      "description": "CAD symbol in group 'door': Doors, shutters, gates.",
+      "view": "mặt bằng (từ trên)",
+      "shape_hint": "Pattern follows door family symbol style; identify by geometry + nearby label/annotation.",
+      "exclude_hints": [
+        "Không nhầm với text annotation thuần",
+        "Không gộp nhiều cụm khác loại thành một object"
+      ]
+    }
+  ]
+}

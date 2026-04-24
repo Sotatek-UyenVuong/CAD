@@ -334,6 +334,7 @@ def run_qa(
         try:
             import cv2  # type: ignore[import-not-found]
             import numpy as np
+            from PIL import Image
             from google import genai  # type: ignore
             from google.genai import types as _gt  # type: ignore
             from cad_pipeline.config import GEMINI_API_KEY, GEMINI_FLASH_MODEL
@@ -378,9 +379,14 @@ Return ONLY JSON:
                     if title_blocks:
                         best = max(title_blocks, key=lambda b: float(b.score) * max(1, b.width * b.height))
                         crop = best.crop(image)
-                        ok, enc = cv2.imencode(".png", crop)
-                        if ok:
-                            return _extract_from_bytes(enc.tobytes())
+                        if hasattr(cv2, "imencode"):
+                            ok, enc = cv2.imencode(".png", crop)
+                            if ok:
+                                return _extract_from_bytes(enc.tobytes())
+                        rgb = crop[:, :, ::-1] if crop.ndim == 3 else crop
+                        with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tmp:
+                            Image.fromarray(rgb).save(tmp.name, format="PNG")
+                            return _extract_from_bytes(Path(tmp.name).read_bytes())
             except Exception:
                 pass
 

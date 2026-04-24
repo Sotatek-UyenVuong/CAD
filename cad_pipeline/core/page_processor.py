@@ -49,10 +49,7 @@ from cad_pipeline.core.block_sorter import group_text_table_runs, sort_reading_o
 
 def _crop_to_png_bytes(image: np.ndarray) -> bytes:
     """Encode a BGR numpy crop as PNG bytes."""
-    success, buf = cv2.imencode(".png", image)
-    if not success:
-        raise RuntimeError("cv2.imencode failed")
-    return buf.tobytes()
+    return _image_to_png_bytes(image)
 
 
 def _marker_ocr(
@@ -150,10 +147,19 @@ def _gemini_client():
 
 
 def _image_to_png_bytes(image: np.ndarray) -> bytes:
-    success, buf = cv2.imencode(".png", image)
-    if not success:
-        raise RuntimeError("Failed to encode image to PNG")
-    return buf.tobytes()
+    if hasattr(cv2, "imencode"):
+        success, buf = cv2.imencode(".png", image)
+        if success:
+            return buf.tobytes()
+
+    # Fallback for environments where cv2 is a partial/stub module.
+    if image.ndim == 2:
+        pil_image = PILImage.fromarray(image)
+    else:
+        pil_image = PILImage.fromarray(image[:, :, ::-1])
+    bio = io.BytesIO()
+    pil_image.save(bio, format="PNG")
+    return bio.getvalue()
 
 
 def _call_gemini_vision(model_name: str, prompt: str, image: np.ndarray) -> str:

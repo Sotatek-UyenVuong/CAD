@@ -23,8 +23,10 @@ import shutil
 import subprocess
 import tempfile
 import cv2
+import numpy as np
 from pathlib import Path
 from typing import Callable
+from PIL import Image
 
 from cad_pipeline.config import API_BASE_URL, LOCAL_IMAGES_DIR, LOCAL_ORIGINALS_DIR, PDF_DPI, USE_S3
 from cad_pipeline.core.pdf_to_images import pdf_to_page_images
@@ -42,6 +44,75 @@ from cad_pipeline.storage import mongo, qdrant_store
 
 _MARKER_EXCEL_EXTS = {".xls", ".xlsx"}
 _DOC_TO_PDF_EXTS = {".doc", ".docx"}
+_FATAL_LLM_ERROR_TOKENS = (
+    "resource_exhausted",
+    "monthly spending cap",
+    "billing account has exceeded",
+)
+
+
+def _safe_load_image(image_path: str | Path):
+    """Load image robustly even if cv2.imread is unavailable."""
+    image_path = Path(image_path)
+    if hasattr(cv2, "imread"):
+        image = cv2.imread(str(image_path))
+        if image is not None:
+            return image
+
+    # Fallback path for environments where cv2 is a stub module.
+    with Image.open(image_path) as pil_image:
+        rgb = pil_image.convert("RGB")
+    return np.asarray(rgb)[:, :, ::-1].copy()
+
+
+def _encode_png_bytes(image: np.ndarray) -> bytes:
+    """Encode BGR/gray numpy image as PNG bytes with OpenCV/Pillow fallback."""
+    if hasattr(cv2, "imencode"):
+        success, buf = cv2.imencode(".png", image)
+        if success:
+            return buf.tobytes()
+
+    if image.ndim == 2:
+        pil_image = Image.fromarray(image)
+    else:
+        pil_image = Image.fromarray(image[:, :, ::-1])
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tmp:
+        pil_image.save(tmp.name, format="PNG")
+        return Path(tmp.name).read_bytes()
+
+
+def _contains_fatal_llm_error(text: object) -> bool:
+    value = str(text or "").lower()
+    if not value:
+        return False
+    return any(token in value for token in _FATAL_LLM_ERROR_TOKENS)
+
+
+def _iter_text_values(obj: object):
+    if isinstance(obj, str):
+        yield obj
+        return
+    if isinstance(obj, dict):
+        for v in obj.values():
+            yield from _iter_text_values(v)
+        return
+    if isinstance(obj, list):
+        for item in obj:
+            yield from _iter_text_values(item)
+
+
+def _raise_on_fatal_page_errors(page_number: int, short_summary: str, processed_blocks: list[dict]) -> None:
+    if _contains_fatal_llm_error(short_summary):
+        raise RuntimeError(
+            "Gemini quota exhausted while generating page summary "
+            f"(page {page_number})."
+        )
+    for text in _iter_text_values(processed_blocks):
+        if _contains_fatal_llm_error(text):
+            raise RuntimeError(
+                "Gemini quota exhausted while processing page blocks "
+                f"(page {page_number})."
+            )
 
 
 def run_upload_pipeline(
@@ -148,6 +219,7 @@ def run_upload_pipeline(
     )
 
     detector = LayoutDetector.get(score_thr=score_thr)
+    layout_detection_enabled = True
     page_summaries: list[str] = []
     page_ids: list[str] = []
     qdrant_records: list[dict] = []
@@ -169,11 +241,22 @@ def run_upload_pipeline(
             image_url = f"{API_BASE_URL}/images/{rel}"
 
         # ── Step 4b: Load image for processing ──────────────────────────────
-        image = cv2.imread(str(image_path))
+        image = _safe_load_image(image_path)
 
         # ── Step 5: Layout detection ─────────────────────────────────────────
         log(f"[5/8] Layout detection — page {page_number}...")
-        blocks = detector.predict_file(image_path)
+        if layout_detection_enabled:
+            try:
+                blocks = detector.predict_file(image_path)
+            except ImportError as exc:
+                layout_detection_enabled = False
+                blocks = []
+                log(
+                    "[5/8] Layout detection unavailable "
+                    f"({exc}) — continuing without layout blocks."
+                )
+        else:
+            blocks = []
 
         # ── Step 6: Page summary + block processing — run concurrently ─────
         # marker_page_md: pre-cached from chunked PDF OCR (large docs only)
@@ -187,6 +270,7 @@ def run_upload_pipeline(
             )
             short_summary = _summary_future.result()
             processed_blocks = _blocks_future.result()
+        _raise_on_fatal_page_errors(page_number, short_summary, processed_blocks)
         page_summaries.append(short_summary)
         title_block_index.extend(_extract_title_block_entries(page_number, processed_blocks))
 
@@ -411,16 +495,16 @@ def _upload_block_crops(
     page_number: int,
 ) -> None:
     """Upload each block crop to S3 and attach the crop_url to processed_blocks."""
-    import cv2 as _cv2
     from cad_pipeline.storage.s3_store import upload_block_crop
 
     for i, (block, proc) in enumerate(zip(blocks, processed_blocks)):
         crop = block.crop(image)
-        success, buf = _cv2.imencode(".png", crop)
-        if not success:
+        try:
+            png_bytes = _encode_png_bytes(crop)
+        except Exception:
             continue
         crop_url = upload_block_crop(
-            image_bytes=buf.tobytes(),
+            image_bytes=png_bytes,
             folder_id=folder_id,
             file_id=file_id,
             page_number=page_number,

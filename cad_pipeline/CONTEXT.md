@@ -277,6 +277,7 @@ count_result (có "positions")
 [4] Per page (xử lý tuần tự từng page):
     → USE_S3=true: upload page PNG → R2 | false: lưu local path
     → Layout detection (Detectron2 R_101_FPN_3x, 5 classes)
+      · Nếu thiếu Detectron2: auto degrade (blocks=[]), không fail toàn bộ upload
     → [PARALLEL] Gemini page summary  ┐ chạy đồng thời
                  Process blocks        ┘ (ThreadPoolExecutor)
          └─ process_page_blocks():
@@ -301,6 +302,14 @@ count_result (có "positions")
          · chuẩn hóa metadata (drawing_no, drawing_title, project) theo page
          · lưu vào files.title_block_index để lookup nhanh ảnh→file/page
 ```
+
+**Runtime resiliency (2026-04-22):**
+- `cv2.imread` không còn là single point of failure trong upload path.
+  - Nếu `cv2.imread` không tồn tại hoặc đọc lỗi, pipeline fallback sang Pillow (`PIL`) để load ảnh rồi convert về BGR numpy.
+- Khi Detectron2 không khả dụng:
+  - upload vẫn tiếp tục với `blocks=[]` (không có layout boxes),
+  - vẫn tạo page summary, context, embeddings, Mongo/Qdrant records.
+- Mục tiêu: ưu tiên ingest thành công thay vì fail cứng do thiếu dependency cục bộ.
 
 **Tại sao cần 2 tầng file summary?**
 - `files.summary` (full) → dùng khi File Agent cần tra cứu chi tiết từng page
@@ -548,7 +557,7 @@ POST   /tools/area/context              Area from page context (LLM)
 
 ---
 
-## Recent logic updates (2026-04-21)
+## Recent logic updates (2026-04-22)
 
 ### 1) Upload notification center (persisted by user)
 - Added backend notification persistence (`notifications` collection in MongoDB).
@@ -590,3 +599,39 @@ POST   /tools/area/context              Area from page context (LLM)
 - Removed folder upload CTA from Home upload section (file-only upload UI).
 - Updated supported formats in UI:
   - `PDF, DOC, DOCX, XLS, XLSX, PNG, JPG, JPEG, WEBP, GIF, BMP, TIF, TIFF`.
+
+### 6) Upload dependency fallback hardening
+- Added robust image-load fallback in upload pipeline:
+  - OpenCV path first (`cv2.imread`) when available,
+  - Pillow fallback when OpenCV runtime is partial/stub.
+- Added graceful layout-detection fallback:
+  - if Detectron2 import fails, disable layout detection for remaining pages,
+  - continue indexing flow without failing the job.
+
+### 7) Notification polling optimization
+- Frontend notifications polling is no longer a fixed-interval background loop.
+- Client now continues polling only while there is at least one `processing` upload notification.
+- This reduces repetitive `/notifications` traffic when there are no active uploads.
+
+### 8) Upload/session behavior for existing folders
+- Uploading a file into an existing folder now creates a new chat session per upload
+  instead of reusing a folder-bound local session.
+- Session sources persist with backend `chat_sessions.file_ids` using the uploaded `file_id`
+  from `/upload/{job_id}/status`.
+
+### 9) Upload fail-fast for LLM quota errors
+- Upload pipeline now treats fatal LLM quota/billing errors (e.g. 429 `RESOURCE_EXHAUSTED`)
+  as hard failures.
+- If a page summary or block output contains quota-exhausted signals, upload raises an exception,
+  job status becomes `error`, and notification status is updated to `Upload failed`.
+- Frontend upload flow only navigates/creates session on `status=done`, so quota failures remain
+  in error notification path.
+
+### 10) Environment diagnostics + object description recovery
+- Added `python -m cad_pipeline.scripts.check_env` (and `--strict`) to validate:
+  - runtime modules (`cv2`, `numpy`, `PIL`, `fitz`, `pymongo`, `qdrant_client`)
+  - optional modules (`detectron2`, `google.genai`, `cohere`)
+  - key files and environment variables.
+- Pinned OpenCV in `requirements.txt` to `opencv-python-headless==4.10.0.84`.
+- Recreated and expanded `cad_pipeline/object_descriptions.json` baseline to 94 entries
+  to restore object-description lookup flow.

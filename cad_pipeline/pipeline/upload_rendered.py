@@ -33,6 +33,8 @@ from pathlib import Path
 from typing import Callable
 
 import cv2
+import numpy as np
+from PIL import Image
 
 _HERE = Path(__file__).resolve().parent.parent.parent
 if str(_HERE) not in sys.path:
@@ -53,6 +55,19 @@ from cad_pipeline.storage import mongo, qdrant_store
 
 # Number of pages to process concurrently
 N_PARALLEL = 10
+
+
+def _safe_load_image(image_path: str | Path):
+    """Load image robustly even if cv2.imread is unavailable."""
+    image_path = Path(image_path)
+    if hasattr(cv2, "imread"):
+        image = cv2.imread(str(image_path))
+        if image is not None:
+            return image
+
+    with Image.open(image_path) as pil_image:
+        rgb = pil_image.convert("RGB")
+    return np.asarray(rgb)[:, :, ::-1].copy()
 
 
 # ── DXF mapping helpers ─────────────────────────────────────────────────────
@@ -268,7 +283,7 @@ def run_upload_rendered(
                 "qdrant_record": None,
             }
 
-        image = cv2.imread(str(png_path))
+        image = _safe_load_image(png_path)
         if image is None:
             log(f"  ⚠ page {page_number}: could not load image — skipping")
             return page_number, {

@@ -17,6 +17,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+from PIL import Image
 
 from cad_pipeline.config import (
     LAYOUT_CLASSES,
@@ -135,7 +136,12 @@ class LayoutDetector:
 
     def predict_file(self, image_path: Path | str) -> list[LayoutBlock]:
         """Convenience method: load image from disk, run detection."""
-        img = cv2.imread(str(image_path))
+        path = Path(image_path)
+        img = cv2.imread(str(path)) if hasattr(cv2, "imread") else None
+        if img is None:
+            with Image.open(path) as pil_image:
+                rgb = pil_image.convert("RGB")
+            img = np.asarray(rgb)[:, :, ::-1].copy()
         if img is None:
             raise FileNotFoundError(f"Cannot read image: {image_path}")
         return self.predict_image(img)

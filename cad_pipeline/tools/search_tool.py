@@ -17,10 +17,12 @@ from __future__ import annotations
 import base64
 import json
 import re
+import tempfile
 from pathlib import Path
 
 import cv2
 import numpy as np
+from PIL import Image
 
 from cad_pipeline.config import (
     GEMINI_API_KEY,
@@ -132,9 +134,14 @@ def _extract_title_block_query(
                     # Pick most reliable title block region.
                     best = max(title_blocks, key=lambda b: float(b.score) * max(1, b.width * b.height))
                     crop = best.crop(image)
-                    ok, buf = cv2.imencode(".png", crop)
-                    if ok:
-                        return _extract_from_bytes(buf.tobytes())
+                    if hasattr(cv2, "imencode"):
+                        ok, buf = cv2.imencode(".png", crop)
+                        if ok:
+                            return _extract_from_bytes(buf.tobytes())
+                    rgb = crop[:, :, ::-1] if crop.ndim == 3 else crop
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tmp:
+                        Image.fromarray(rgb).save(tmp.name, format="PNG")
+                        return _extract_from_bytes(Path(tmp.name).read_bytes())
         except Exception:
             # fall through to full-image extraction
             pass
