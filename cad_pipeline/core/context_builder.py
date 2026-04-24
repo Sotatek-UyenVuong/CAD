@@ -155,7 +155,19 @@ def generate_file_short_summary(file_name: str, page_summaries: list[str]) -> st
             contents=prompt,
         )
         return response.text.strip()
-    except Exception:
+    except Exception as exc:
+        err = str(exc).lower()
+        fatal_tokens = (
+            "resource_exhausted",
+            "monthly spending cap",
+            "billing account has exceeded",
+            "api_key_invalid",
+            "api key not valid",
+            "invalid api key",
+            "permission_denied",
+        )
+        if any(token in err for token in fatal_tokens):
+            return f"[Short summary error: {exc}]"
         return page_summaries[0] if page_summaries else file_name
 
 

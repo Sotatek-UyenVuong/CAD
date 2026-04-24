@@ -48,6 +48,10 @@ _FATAL_LLM_ERROR_TOKENS = (
     "resource_exhausted",
     "monthly spending cap",
     "billing account has exceeded",
+    "api_key_invalid",
+    "api key not valid",
+    "invalid api key",
+    "permission_denied",
 )
 
 
@@ -104,15 +108,20 @@ def _iter_text_values(obj: object):
 def _raise_on_fatal_page_errors(page_number: int, short_summary: str, processed_blocks: list[dict]) -> None:
     if _contains_fatal_llm_error(short_summary):
         raise RuntimeError(
-            "Gemini quota exhausted while generating page summary "
+            "Gemini fatal API error while generating page summary "
             f"(page {page_number})."
         )
     for text in _iter_text_values(processed_blocks):
         if _contains_fatal_llm_error(text):
             raise RuntimeError(
-                "Gemini quota exhausted while processing page blocks "
+                "Gemini fatal API error while processing page blocks "
                 f"(page {page_number})."
             )
+
+
+def _raise_on_fatal_summary_error(text: str, stage: str) -> None:
+    if _contains_fatal_llm_error(text):
+        raise RuntimeError(f"Gemini fatal API error while {stage}.")
 
 
 def run_upload_pipeline(
@@ -329,6 +338,7 @@ def run_upload_pipeline(
 
     # Generate a short summary for this file via Gemini Flash
     file_short_summary = generate_file_short_summary(file_name, page_summaries)
+    _raise_on_fatal_summary_error(file_short_summary, "generating file short summary")
     mongo.update_file_short_summary(file_id, file_short_summary)
     mongo.update_file_title_block_index(file_id, title_block_index)
 
@@ -431,6 +441,7 @@ def _run_marker_text_pipeline(
     file_summary = build_file_summary(page_summaries, file_name)
     mongo.update_file_summary(file_id, file_summary)
     file_short_summary = generate_file_short_summary(file_name, page_summaries)
+    _raise_on_fatal_summary_error(file_short_summary, "generating file short summary")
     mongo.update_file_short_summary(file_id, file_short_summary)
     mongo.update_file_title_block_index(file_id, [])
 
